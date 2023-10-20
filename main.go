@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/dustin/go-humanize"
 	bin "github.com/gagliardetto/binary"
 	"github.com/gagliardetto/solana-go"
@@ -32,10 +33,12 @@ func main() {
 		carPath    string
 		prevHash   string
 		numWorkers uint
+		noProgress bool
 	)
 	flag.StringVar(&carPath, "car", "", "Path to CAR file")
 	flag.StringVar(&prevHash, "prevhash", "", "Previous hash")
 	flag.UintVar(&numWorkers, "workers", uint(runtime.NumCPU()), "Number of workers")
+	flag.BoolVar(&noProgress, "no-progress", false, "Disable progress bar")
 	flag.Parse()
 
 	if carPath == "" {
@@ -50,7 +53,7 @@ func main() {
 		klog.Infof("Took %s", time.Since(startedAt))
 	}()
 	ctx := context.Background()
-	if err := checkCar(ctx, carPath, prevHash, numWorkers); err != nil {
+	if err := checkCar(ctx, carPath, prevHash, numWorkers, noProgress); err != nil {
 		klog.Exit(err.Error())
 	}
 	klog.Infof("CAR file checked successfully")
@@ -107,6 +110,7 @@ func checkCar(
 	carPath string,
 	prevHash string,
 	numWorkers uint,
+	noProgress bool,
 ) error {
 	file, err := os.Open(carPath)
 	if err != nil {
@@ -224,7 +228,9 @@ func checkCar(
 
 					lastNumHashes = thisNumHashes
 				}
-				fmt.Printf("\r%s", greenBG(logMsg))
+				if !noProgress {
+					fmt.Printf("\r%s", greenBG(logMsg))
+				}
 			case *ipldbindcode.Transaction:
 				txNode := resValue
 				{
@@ -248,7 +254,7 @@ func checkCar(
 				numHashes.Add(uint64(entry.NumHashes))
 
 				if entry.NumHashes == 0 && len(entry.Transactions) == 0 {
-					klog.Warningf("entry has no hashes and no transactions")
+					klog.Exitf("entry has no hashes and no transactions: %s", spew.Sdump(entry))
 					onDone()
 					continue
 				}
