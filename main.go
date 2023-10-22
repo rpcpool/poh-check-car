@@ -359,6 +359,15 @@ func checkCar(
 		klog.Infof("Last block hash for slot %d: %s", lastBlockNum, solana.Hash(blockhash))
 		klog.Infof("Number of checked entries: %s", humanize.Comma(int64(numCheckedEntries.Load())))
 		klog.Infof("Number of hashes: %s", humanize.Comma(int64(numHashes.Load())))
+
+		mustNumHashesPerEpoch := uint64(345_600_000_000)
+		if numHashes.Load() != mustNumHashesPerEpoch {
+			return fmt.Errorf(
+				"wrong number of hashes for this epoch: expected %d, got %d",
+				mustNumHashesPerEpoch,
+				numHashes.Load(),
+			)
+		}
 	}
 	klog.Infof("Successfully checked PoH on CAR file")
 	return nil
