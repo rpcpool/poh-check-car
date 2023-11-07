@@ -44,15 +44,15 @@ func main() {
 	flag.Parse()
 
 	if carPath == "" {
-		klog.Exit("No CAR file given")
+		klog.Exit("error: No CAR file given")
 	}
 	if prevHash == "" {
-		klog.Exit("No previous hash given")
+		klog.Exit("error: No previous hash given")
 	}
 
 	// check that the epoch number is set:
 	if epochNum < 0 {
-		klog.Exit("No epoch number given; please use the --epoch flag")
+		klog.Exit("error: No epoch number given; please use the --epoch flag")
 	}
 
 	startedAt := time.Now()
@@ -68,7 +68,7 @@ func main() {
 		noProgress,
 		uint64(epochNum),
 	); err != nil {
-		klog.Exit(err.Error())
+		klog.Exitf("error: %s", err)
 	}
 	klog.Infof("Successfully checked PoH on CAR file for epoch %d", epochNum)
 }
@@ -129,7 +129,7 @@ func checkCar(
 ) error {
 	file, err := os.Open(carPath)
 	if err != nil {
-		klog.Exit(err.Error())
+		klog.Exitf("error: failed to open CAR file: %s", err)
 	}
 	defer file.Close()
 
@@ -137,7 +137,7 @@ func checkCar(
 
 	rd, err := car.NewCarReader(cachingReader)
 	if err != nil {
-		klog.Exitf("Failed to open CAR: %s", err)
+		klog.Exitf("error: failed to create CAR reader: %s", err)
 	}
 	{
 		// print roots:
@@ -203,7 +203,7 @@ func checkCar(
 						return
 					}
 					if err := job.assert(); err != nil {
-						panic(err)
+						panic(fmt.Errorf("error: %w", err))
 					}
 					numCheckedEntries.Add(1)
 					wg.Done()
@@ -223,10 +223,12 @@ func checkCar(
 		for result := range outputChan {
 			switch resValue := result.Value.(type) {
 			case error:
-				panic(resValue)
+				panic(fmt.Errorf("error: %w", resValue))
 			case uint64:
 				if CalcEpochForSlot(resValue) == epochNum {
 					numHashes.Add(currentSlotNumHashesAccumulator)
+				} else {
+					panic(fmt.Sprintf("error: unexpected slot %d from epoch %d", resValue, CalcEpochForSlot(resValue)))
 				}
 				currentSlotNumHashesAccumulator = 0
 				numBlocks.Add(1)
@@ -260,7 +262,7 @@ func checkCar(
 				{
 					sigs, err := readAllSignatures(txNode.Data.Bytes())
 					if err != nil {
-						panic(fmt.Sprintf("failed to read signature: %s", err))
+						panic(fmt.Sprintf("error: failed to read signature: %s", err))
 					}
 					for i := range sigs {
 						signatureAccumulator = append(signatureAccumulator, sigs[i][:])
@@ -278,12 +280,12 @@ func checkCar(
 				currentSlotNumHashesAccumulator += uint64(entry.NumHashes)
 
 				if entry.NumHashes == 0 && len(entry.Transactions) == 0 {
-					klog.Exitf("entry has no hashes and no transactions: %s", spew.Sdump(entry))
+					klog.Exitf("error: entry has no hashes and no transactions: %s", spew.Sdump(entry))
 					onDone()
 					continue
 				}
 				if prevBlockHash.IsZero() {
-					panic("prevBlockHash is zero")
+					panic("error: prevBlockHash is zero")
 				}
 
 				{
@@ -308,7 +310,7 @@ func checkCar(
 				}
 				onDone()
 			default:
-				panic(fmt.Errorf("unexpected result type: %T", result.Value))
+				panic(fmt.Errorf("error: unexpected result type: %T", result.Value))
 			}
 		}
 	}()
@@ -508,7 +510,7 @@ func (w parserTask) Run(ctx context.Context) interface{} {
 			EntryIndex:   w.entryIndex,
 		}
 	default:
-		panic(fmt.Sprintf("unexpected kind: %s", iplddecoders.Kind(block.RawData()[1])))
+		panic(fmt.Sprintf("error: unexpected kind: %s", iplddecoders.Kind(block.RawData()[1])))
 	}
 }
 
