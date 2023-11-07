@@ -34,11 +34,13 @@ func main() {
 		prevHash   string
 		numWorkers uint
 		noProgress bool
+		epochNum   int64
 	)
 	flag.StringVar(&carPath, "car", "", "Path to CAR file")
 	flag.StringVar(&prevHash, "prevhash", "", "Previous hash")
 	flag.UintVar(&numWorkers, "workers", uint(runtime.NumCPU()), "Number of workers")
 	flag.BoolVar(&noProgress, "no-progress", false, "Disable progress bar")
+	flag.Int64Var(&epochNum, "epoch", -1, "Epoch number")
 	flag.Parse()
 
 	if carPath == "" {
@@ -48,15 +50,27 @@ func main() {
 		klog.Exit("No previous hash given")
 	}
 
+	// check that the epoch number is set:
+	if epochNum < 0 {
+		klog.Exit("No epoch number given; please use the --epoch flag")
+	}
+
 	startedAt := time.Now()
 	defer func() {
 		klog.Infof("Took %s", time.Since(startedAt))
 	}()
 	ctx := context.Background()
-	if err := checkCar(ctx, carPath, prevHash, numWorkers, noProgress); err != nil {
+	if err := checkCar(
+		ctx,
+		carPath,
+		prevHash,
+		numWorkers,
+		noProgress,
+		uint64(epochNum),
+	); err != nil {
 		klog.Exit(err.Error())
 	}
-	klog.Infof("CAR file checked successfully")
+	klog.Infof("Successfully checked PoH on CAR file for epoch %d", epochNum)
 }
 
 type entryCheckJob struct {
@@ -111,6 +125,7 @@ func checkCar(
 	prevHash string,
 	numWorkers uint,
 	noProgress bool,
+	epochNum uint64,
 ) error {
 	file, err := os.Open(carPath)
 	if err != nil {
@@ -198,13 +213,18 @@ func checkCar(
 	lastNumEntries := uint64(0)
 
 	go func() {
-		// process the results from the workers
+		currentSlotNumHashesAccumulator := uint64(0)
 
+		// process the results from the workers:
 		for result := range outputChan {
 			switch resValue := result.Value.(type) {
 			case error:
 				panic(resValue)
 			case uint64:
+				if CalcEpochForSlot(resValue) == epochNum {
+					numHashes.Add(currentSlotNumHashesAccumulator)
+				}
+				currentSlotNumHashesAccumulator = 0
 				numBlocks.Add(1)
 				blockhash = solana.Hash(prevBlockHash)
 				percentDone := float64(numBlocks.Load()) / float64(432000) * 100
@@ -229,7 +249,7 @@ func checkCar(
 					lastNumHashes = thisNumHashes
 				}
 				if !noProgress {
-					fmt.Printf("\r%s", greenBG(logMsg))
+					fmt.Printf("\r%s", greenBg(logMsg))
 				}
 			case *ipldbindcode.Transaction:
 				txNode := resValue
@@ -251,7 +271,7 @@ func checkCar(
 				}
 
 				entry := resValue.Entry
-				numHashes.Add(uint64(entry.NumHashes))
+				currentSlotNumHashesAccumulator += uint64(entry.NumHashes)
 
 				if entry.NumHashes == 0 && len(entry.Transactions) == 0 {
 					klog.Exitf("entry has no hashes and no transactions: %s", spew.Sdump(entry))
@@ -331,7 +351,7 @@ func checkCar(
 			waitExecuted.Add(1)
 			waitResultsReceived.Add(1)
 			numReceivedParsed.Add(1)
-			workerInputChan <- newWorker(
+			workerInputChan <- newParserTask(
 				uint64(lastBlockNum),
 				entryIndex,
 				block,
@@ -356,20 +376,41 @@ func checkCar(
 		klog.Infof("All assertions finished")
 
 		// print last blockHash:
-		klog.Infof("Last block hash for slot %d: %s", lastBlockNum, solana.Hash(blockhash))
-		klog.Infof("Number of checked entries: %s", humanize.Comma(int64(numCheckedEntries.Load())))
-		klog.Infof("Number of hashes: %s", humanize.Comma(int64(numHashes.Load())))
+		klog.Infof(
+			"Last block hash for slot %d for epoch %d: %s",
+			epochNum,
+			lastBlockNum,
+			solana.Hash(blockhash),
+		)
+		klog.Infof(
+			"Number of checked entries for epoch %d: %s",
+			epochNum,
+			humanize.Comma(int64(numCheckedEntries.Load())),
+		)
+		klog.Infof(
+			"Number of hashes for epoch %d: %s",
+			epochNum,
+			humanize.Comma(int64(numHashes.Load())),
+		)
+		// if the last slot is for a different epoch, return an error:
+		if CalcEpochForSlot(uint64(lastBlockNum)) != epochNum {
+			return fmt.Errorf(
+				"PoH error: last slot %d is not in epoch %d",
+				lastBlockNum,
+				epochNum,
+			)
+		}
 
 		mustNumHashesPerEpoch := uint64(345_600_000_000)
 		if numHashes.Load() != mustNumHashesPerEpoch {
 			return fmt.Errorf(
-				"wrong number of hashes for this epoch: expected %d, got %d",
+				"PoH error: wrong number of hashes for epoch %d: expected %d, got %d",
+				epochNum,
 				mustNumHashesPerEpoch,
 				numHashes.Load(),
 			)
 		}
 	}
-	klog.Infof("Successfully checked PoH on CAR file")
 	return nil
 }
 
@@ -377,7 +418,7 @@ func blackFg(s string) string {
 	return "\033[30m" + s + "\033[0m"
 }
 
-func greenBG(s string) string {
+func greenBg(s string) string {
 	return blackFg("\033[42m" + s + "\033[0m")
 }
 
@@ -390,10 +431,14 @@ func readAllSignatures(buf []byte) ([]solana.Signature, error) {
 	if numSigs == 0 {
 		return nil, fmt.Errorf("no signatures")
 	}
+	// check that there is at least 64 bytes * numSigs left:
+	if decoder.Remaining() < (64 * numSigs) {
+		return nil, fmt.Errorf("not enough bytes left to read %d signatures", numSigs)
+	}
 
-	var sig solana.Signature
 	var sigs []solana.Signature
 	for i := 0; i < numSigs; i++ {
+		var sig solana.Signature
 		numRead, err := decoder.Read(sig[:])
 		if err != nil {
 			return nil, err
@@ -413,20 +458,20 @@ func (s slotSignal) Run(ctx context.Context) interface{} {
 	return uint64(s)
 }
 
-type txParserWorker struct {
+type parserTask struct {
 	slot       uint64
 	entryIndex int
 	blk        blocks.Block
 	done       func()
 }
 
-func newWorker(
+func newParserTask(
 	slot uint64,
 	entryIndex int,
 	blk blocks.Block,
 	done func(),
-) *txParserWorker {
-	return &txParserWorker{
+) *parserTask {
+	return &parserTask{
 		slot:       slot,
 		entryIndex: entryIndex,
 		blk:        blk,
@@ -434,7 +479,7 @@ func newWorker(
 	}
 }
 
-func (w txParserWorker) Run(ctx context.Context) interface{} {
+func (w parserTask) Run(ctx context.Context) interface{} {
 	defer func() {
 		w.done()
 	}()
@@ -475,3 +520,10 @@ func alignToPageSize(size int) int {
 	mem := uintptr(size + alignment)
 	return int((mem + uintptr(mask)) & ^uintptr(mask))
 }
+
+// CalcEpochForSlot returns the epoch for the given slot.
+func CalcEpochForSlot(slot uint64) uint64 {
+	return slot / EpochLen
+}
+
+const EpochLen = 432000
