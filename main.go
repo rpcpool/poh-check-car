@@ -159,7 +159,11 @@ func checkCar(
 		klog.Infof("Read %d nodes from CAR file", numNodesSeen)
 	}()
 
-	prevBlockHash := poh.State(solana.MustPublicKeyFromBase58(prevHash))
+	prevBlockHashRaw, err := solana.PublicKeyFromBase58(prevHash)
+	if err != nil {
+		return fmt.Errorf("failed to parse previous hash %q: %w", prevHash, err)
+	}
+	prevBlockHash := poh.State(prevBlockHashRaw)
 	fmt.Println("PrevBlockHash:", solana.Hash(prevBlockHash))
 
 	signatureAccumulator := make([][]byte, 0)
