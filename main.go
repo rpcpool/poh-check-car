@@ -30,17 +30,21 @@ import (
 
 func main() {
 	var (
-		carPath    string
-		prevHash   string
-		numWorkers uint
-		noProgress bool
-		epochNum   int64
+		carPath        string
+		prevHash       string
+		numWorkers     uint
+		noProgress     bool
+		epochNum       int64
+		assertLastSlot uint64
+		assertLastHash string
 	)
 	flag.StringVar(&carPath, "car", "", "Path to CAR file")
 	flag.StringVar(&prevHash, "prevhash", "", "Previous hash")
 	flag.UintVar(&numWorkers, "workers", uint(runtime.NumCPU()), "Number of workers")
 	flag.BoolVar(&noProgress, "no-progress", false, "Disable progress bar")
 	flag.Int64Var(&epochNum, "epoch", -1, "Epoch number")
+	flag.Uint64Var(&assertLastSlot, "assert-last-slot", 0, "Assert last slot")
+	flag.StringVar(&assertLastHash, "assert-last-hash", "", "Assert last hash")
 	flag.Parse()
 
 	if carPath == "" {
@@ -67,6 +71,8 @@ func main() {
 		numWorkers,
 		noProgress,
 		uint64(epochNum),
+		assertLastSlot,
+		assertLastHash,
 	); err != nil {
 		klog.Exitf("error: %s", err)
 	}
@@ -126,6 +132,8 @@ func checkCar(
 	numWorkers uint,
 	noProgress bool,
 	epochNum uint64,
+	assertLastSlot uint64,
+	assertLastHash string,
 ) error {
 	file, err := os.Open(carPath)
 	if err != nil {
@@ -405,6 +413,29 @@ func checkCar(
 				lastBlockNum,
 				epochNum,
 			)
+		}
+		{
+			if assertLastSlot != 0 {
+				if assertLastSlot != uint64(lastBlockNum) {
+					return fmt.Errorf(
+						"PoH error: expected last slot to be %d, got %d (%s)",
+						assertLastSlot,
+						lastBlockNum,
+						solana.Hash(blockhash),
+					)
+				}
+			}
+			if assertLastHash != "" {
+				if assertLastHash != solana.Hash(blockhash).String() {
+					return fmt.Errorf(
+						"PoH error: expected last hash to be %s (%d), got %s (%d)",
+						assertLastHash,
+						assertLastSlot,
+						solana.Hash(blockhash),
+						lastBlockNum,
+					)
+				}
+			}
 		}
 
 		mustNumHashesPerEpoch := uint64(345_600_000_000)
