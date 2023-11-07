@@ -32,8 +32,8 @@ POH_CHECK_PREVIOUS_BLOCKHASH=$(curl https://api.mainnet-beta.solana.com \
 	-H "Content-Type: application/json" \
 	--data '{"jsonrpc":"2.0","id":1, "method":"getBlock","params":['$POH_CHECK_EPOCH_FIRST_SLOT',{"transactionDetails":"none","rewards":false}]}' | jq -r '.result.previousBlockhash')
 
-# check that POH_CHECK_PREVIOUS_BLOCKHASH has a value, and is a string without spaces
-if [[ -z "$POH_CHECK_PREVIOUS_BLOCKHASH" || ! "$POH_CHECK_PREVIOUS_BLOCKHASH" =~ ^[a-zA-Z0-9]+$ ]]; then
+# check that POH_CHECK_PREVIOUS_BLOCKHASH has a value, and is a string without spaces and is base58
+if [[ -z "$POH_CHECK_PREVIOUS_BLOCKHASH" || ! "$POH_CHECK_PREVIOUS_BLOCKHASH" =~ ^[1-9A-HJ-NP-Za-km-z]+$ ]]; then
   echo "Failed to find the previous blockhash for epoch $POH_CHECK_EPOCH 's first slot $POH_CHECK_EPOCH_FIRST_SLOT"
   exit 1
 fi
