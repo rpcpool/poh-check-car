@@ -27,10 +27,13 @@ if [[ -z "$POH_CHECK_EPOCH_FIRST_SLOT" || ! "$POH_CHECK_EPOCH_FIRST_SLOT" =~ ^[0
   exit 1
 fi
 
-POH_CHECK_PREVIOUS_BLOCKHASH=$(curl https://api.mainnet-beta.solana.com \
+POH_CHECK_FIRST_SLOT_DATA=$(curl https://api.mainnet-beta.solana.com \
 	-X POST \
 	-H "Content-Type: application/json" \
-	--data '{"jsonrpc":"2.0","id":1, "method":"getBlock","params":['$POH_CHECK_EPOCH_FIRST_SLOT',{"transactionDetails":"none","rewards":false}]}' | jq -r '.result.previousBlockhash')
+	--data '{"jsonrpc":"2.0","id":1, "method":"getBlock","params":['$POH_CHECK_EPOCH_FIRST_SLOT',{"transactionDetails":"none","rewards":false}]}')
+
+POH_CHECK_PREVIOUS_BLOCKHASH=$(echo $POH_CHECK_FIRST_SLOT_DATA | jq -r '.result.previousBlockhash')
+POH_CHECK_PREVIOUS_SLOT=$(echo $POH_CHECK_FIRST_SLOT_DATA | jq -r '.result.parentSlot')
 
 # check that POH_CHECK_PREVIOUS_BLOCKHASH has a value, and is a string without spaces and is base58
 if [[ -z "$POH_CHECK_PREVIOUS_BLOCKHASH" || ! "$POH_CHECK_PREVIOUS_BLOCKHASH" =~ ^[1-9A-HJ-NP-Za-km-z]+$ ]]; then
@@ -38,7 +41,7 @@ if [[ -z "$POH_CHECK_PREVIOUS_BLOCKHASH" || ! "$POH_CHECK_PREVIOUS_BLOCKHASH" =~
   exit 1
 fi
 
-echo "The previous blockhash for epoch $POH_CHECK_EPOCH 's first slot $POH_CHECK_EPOCH_FIRST_SLOT is $POH_CHECK_PREVIOUS_BLOCKHASH"
+echo "Epoch $POH_CHECK_EPOCH 's first slot is $POH_CHECK_EPOCH_FIRST_SLOT; its parent slot is $POH_CHECK_PREVIOUS_SLOT which has blockhash $POH_CHECK_PREVIOUS_BLOCKHASH"
 
 echo "Use that as the --prevhash argument to poh-check-car like this:"
 
