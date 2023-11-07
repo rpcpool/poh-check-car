@@ -164,7 +164,7 @@ func checkCar(
 		return fmt.Errorf("failed to parse previous hash %q: %w", prevHash, err)
 	}
 	prevBlockHash := poh.State(prevBlockHashRaw)
-	fmt.Println("PrevBlockHash:", solana.Hash(prevBlockHash))
+	klog.Infof("epoch %d: prevBlockHash: %s", epochNum, solana.Hash(prevBlockHash))
 
 	signatureAccumulator := make([][]byte, 0)
 
