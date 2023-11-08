@@ -415,26 +415,22 @@ func checkCar(
 			)
 		}
 		{
-			if assertLastSlot != 0 {
-				if assertLastSlot != uint64(lastBlockNum) {
-					return fmt.Errorf(
-						"PoH error: expected last slot to be %d, got %d (%s)",
-						assertLastSlot,
-						lastBlockNum,
-						solana.Hash(blockhash),
-					)
-				}
+			if assertLastSlot != 0 && assertLastSlot != uint64(lastBlockNum) {
+				return fmt.Errorf(
+					"PoH error: expected last slot to be %d, got %d (%s)",
+					assertLastSlot,
+					lastBlockNum,
+					solana.Hash(blockhash),
+				)
 			}
-			if assertLastHash != "" {
-				if assertLastHash != solana.Hash(blockhash).String() {
-					return fmt.Errorf(
-						"PoH error: expected last hash to be %s (%d), got %s (%d)",
-						assertLastHash,
-						assertLastSlot,
-						solana.Hash(blockhash),
-						lastBlockNum,
-					)
-				}
+			if assertLastHash != "" && assertLastHash != solana.Hash(blockhash).String() {
+				return fmt.Errorf(
+					"PoH error: expected last hash to be %s (%d), got %s (%d)",
+					assertLastHash,
+					assertLastSlot,
+					solana.Hash(blockhash),
+					lastBlockNum,
+				)
 			}
 		}
 
