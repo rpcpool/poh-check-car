@@ -18,6 +18,7 @@ import (
 	"github.com/dustin/go-humanize"
 	bin "github.com/gagliardetto/binary"
 	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipld/go-car"
 	"github.com/rpcpool/poh-check-car/merkletree"
@@ -30,33 +31,195 @@ import (
 
 func main() {
 	var (
-		carPath        string
-		prevHash       string
-		numWorkers     uint
-		noProgress     bool
-		epochNum       int64
-		assertLastSlot uint64
-		assertLastHash string
+		carPath          string
+		prevHash         string
+		numWorkers       uint
+		noProgress       bool
+		epochNum         int64
+		assertLastBlock  uint64
+		assertLastHash   string
+		auto             bool
+		rpcEndpoint      string
+		assertFirstBlock int64
+		assertFirstHash  string
 	)
 	flag.StringVar(&carPath, "car", "", "Path to CAR file")
 	flag.StringVar(&prevHash, "prevhash", "", "Previous hash")
 	flag.UintVar(&numWorkers, "workers", uint(runtime.NumCPU()), "Number of workers")
 	flag.BoolVar(&noProgress, "no-progress", false, "Disable progress bar")
 	flag.Int64Var(&epochNum, "epoch", -1, "Epoch number")
-	flag.Uint64Var(&assertLastSlot, "assert-last-slot", 0, "Assert last slot")
+	flag.Uint64Var(&assertLastBlock, "assert-last-block", 0, "Assert last block")
 	flag.StringVar(&assertLastHash, "assert-last-hash", "", "Assert last hash")
+	flag.BoolVar(&auto, "auto", false, "Automatically find the slot number and hash for first and last slot of the epoch")
+	flag.StringVar(&rpcEndpoint, "rpc", rpc.MainNetBeta.RPC, "RPC endpoint")
+	flag.Int64Var(&assertFirstBlock, "assert-first-block", -1, "Assert first block")
+	flag.StringVar(&assertFirstHash, "assert-first-hash", "", "Assert first blockhash")
 	flag.Parse()
 
 	if carPath == "" {
 		klog.Exit("error: No CAR file given")
 	}
-	if prevHash == "" {
+	if !auto && prevHash == "" {
 		klog.Exit("error: No previous hash given")
 	}
 
 	// check that the epoch number is set:
 	if epochNum < 0 {
 		klog.Exit("error: No epoch number given; please use the --epoch flag")
+	}
+	{
+		if auto {
+			if rpcEndpoint == "" {
+				klog.Exit("error: No RPC endpoint given")
+			}
+			if rpcEndpoint == rpc.MainNetBeta.RPC {
+				klog.Infof("Using default RPC endpoint (slow and rate-limited): %s", rpcEndpoint)
+			} else {
+				klog.Infof("Using RPC endpoint: %s", rpcEndpoint)
+			}
+			rpcClient := rpc.New(rpcEndpoint)
+			{
+				firtstSlot := uint64(epochNum * EpochLen)
+				slotRangeEnd := firtstSlot + 1000
+				// get the first slot of the epoch:
+				blocks, err := rpcClient.GetBlocks(
+					context.Background(),
+					firtstSlot,
+					&slotRangeEnd,
+					rpc.CommitmentConfirmed,
+				)
+				if err != nil {
+					klog.Exitf("error: failed to get first available block for epoch %d: %s", epochNum, err)
+				}
+				firstBlock := blocks[0]
+
+				var parentSlot uint64
+				var parentBlockhash solana.Hash
+				var firstBlockhash solana.Hash
+				no := false
+
+				if epochNum == 0 {
+					genesysHash, err := rpcClient.GetGenesisHash(
+						context.Background(),
+					)
+					if err != nil {
+						klog.Exitf("error: failed to get genesis hash: %s", err)
+					}
+					parentSlot = 0
+					parentBlockhash = genesysHash
+
+					block, err := rpcClient.GetBlockWithOpts(
+						context.Background(),
+						firstBlock,
+						&rpc.GetBlockOpts{
+							Encoding:           solana.EncodingBase64,
+							Commitment:         rpc.CommitmentConfirmed,
+							TransactionDetails: rpc.TransactionDetailsNone,
+							Rewards:            &no,
+						},
+					)
+					if err != nil {
+						klog.Exitf("error: failed to get first block %d for epoch %d: %s", firstBlock, epochNum, err)
+					}
+					firstBlockhash = block.Blockhash
+				} else {
+					block, err := rpcClient.GetBlockWithOpts(
+						context.Background(),
+						firstBlock,
+						&rpc.GetBlockOpts{
+							Encoding:           solana.EncodingBase64,
+							Commitment:         rpc.CommitmentConfirmed,
+							TransactionDetails: rpc.TransactionDetailsNone,
+							Rewards:            &no,
+						},
+					)
+					if err != nil {
+						klog.Exitf("error: failed to get first block %d for epoch %d: %s", firstBlock, epochNum, err)
+					}
+					parentSlot = block.ParentSlot
+					parentBlockhash = block.PreviousBlockhash
+					firstBlockhash = block.Blockhash
+				}
+
+				assertFirstBlock = int64(firstBlock)
+				assertFirstHash = firstBlockhash.String()
+
+				if epochNum == 0 {
+					klog.Infof(
+						"Epoch %d's first block is %d (blockhash=%s); the genesis hash is %s",
+						epochNum,
+						firstBlock,
+						firstBlockhash,
+						parentBlockhash,
+					)
+				} else {
+					klog.Infof(
+						"Epoch %d's first block is %d (blockhash=%s); its parent slot is %d which has blockhash %s",
+						epochNum,
+						firstBlock,
+						firstBlockhash,
+						parentSlot,
+						parentBlockhash,
+					)
+				}
+				prevHash = parentBlockhash.String()
+
+				nextEpochNum := epochNum + 1
+				{
+					firstSlot := uint64(nextEpochNum * EpochLen)
+					slotRangeEnd := firstSlot + 1000
+					blocks, err := rpcClient.GetBlocks(
+						context.Background(),
+						firstSlot,
+						&slotRangeEnd,
+						rpc.CommitmentConfirmed,
+					)
+					if err != nil {
+						klog.Exitf("error: failed to get last available block for epoch %d: %s", epochNum, err)
+					}
+					nextEpochFirstBlock := blocks[0]
+
+					block, err := rpcClient.GetBlockWithOpts(
+						context.Background(),
+						nextEpochFirstBlock,
+						&rpc.GetBlockOpts{
+							Encoding:           solana.EncodingBase64,
+							Commitment:         rpc.CommitmentConfirmed,
+							TransactionDetails: rpc.TransactionDetailsNone,
+							Rewards:            &no,
+						},
+					)
+					if err != nil {
+						klog.Exitf("error: failed to get first block %d for epoch %d: %s", nextEpochFirstBlock, nextEpochNum, err)
+					}
+
+					epochLastSlot := block.ParentSlot
+					epochLastSlotBlockhash := block.PreviousBlockhash
+
+					klog.Infof(
+						"Epoch %d's last block is %d, which hash blockhash %s",
+						epochNum,
+						epochLastSlot,
+						epochLastSlotBlockhash,
+					)
+					assertLastBlock = epochLastSlot
+					assertLastHash = epochLastSlotBlockhash.String()
+				}
+			}
+		}
+	}
+
+	if assertFirstBlock >= 0 {
+		klog.Infof("- Will assert first block in the CAR to be %d", assertFirstBlock)
+	}
+	if assertFirstHash != "" {
+		klog.Infof("- Will assert first blockhash in the CAR to be %s", assertFirstHash)
+	}
+	if assertLastBlock != 0 {
+		klog.Infof("- Will assert last block in the CAR to be %d", assertLastBlock)
+	}
+	if assertLastHash != "" {
+		klog.Infof("- Will assert last blockhash in the CAR to be %s", assertLastHash)
 	}
 
 	startedAt := time.Now()
@@ -71,7 +234,17 @@ func main() {
 		numWorkers,
 		noProgress,
 		uint64(epochNum),
-		assertLastSlot,
+		// first:
+		func() *uint64 {
+			if assertFirstBlock >= 0 {
+				v := uint64(assertFirstBlock)
+				return &v
+			}
+			return nil
+		}(),
+		assertFirstHash,
+		// last:
+		assertLastBlock,
 		assertLastHash,
 	); err != nil {
 		klog.Exitf("error: %s", err)
@@ -132,6 +305,10 @@ func checkCar(
 	numWorkers uint,
 	noProgress bool,
 	epochNum uint64,
+	// first:
+	assertFirstSlot *uint64,
+	assertFirstHash string,
+	// last:
 	assertLastSlot uint64,
 	assertLastHash string,
 ) error {
@@ -224,6 +401,8 @@ func checkCar(
 	lastNumHashes := uint64(0)
 	lastNumEntries := uint64(0)
 
+	isFirstBlock := true
+
 	go func() {
 		currentSlotNumHashesAccumulator := uint64(0)
 
@@ -261,6 +440,46 @@ func checkCar(
 					}
 
 					lastNumHashes = thisNumHashes
+				}
+				{
+					if isFirstBlock {
+						isFirstBlock = false
+						if assertFirstSlot != nil {
+							if *assertFirstSlot != resValue {
+								klog.Exitf(
+									"PoH error: expected first slot to be %d, got %d (%s)",
+									*assertFirstSlot,
+									resValue,
+									solana.Hash(blockhash),
+								)
+							} else {
+								klog.Infof(
+									"Assertion successful: First block for epoch %d is %d (blockhash=%s)",
+									epochNum,
+									resValue,
+									solana.Hash(blockhash),
+								)
+							}
+						}
+						if assertFirstHash != "" {
+							if assertFirstHash != solana.Hash(blockhash).String() {
+								klog.Exitf(
+									"PoH error: expected first hash to be %s (%d), got %s (%d)",
+									assertFirstHash,
+									*assertFirstSlot,
+									solana.Hash(blockhash),
+									resValue,
+								)
+							} else {
+								klog.Infof(
+									"Assertion successful: First blockhash for epoch %d is %s (block=%d)",
+									epochNum,
+									solana.Hash(blockhash),
+									resValue,
+								)
+							}
+						}
+					}
 				}
 				if !noProgress {
 					fmt.Printf("\r%s", greenBg(logMsg))
@@ -415,22 +634,40 @@ func checkCar(
 			)
 		}
 		{
-			if assertLastSlot != 0 && assertLastSlot != uint64(lastBlockNum) {
-				return fmt.Errorf(
-					"PoH error: expected last slot to be %d, got %d (%s)",
-					assertLastSlot,
-					lastBlockNum,
-					solana.Hash(blockhash),
-				)
+			if assertLastSlot != 0 {
+				if assertLastSlot != uint64(lastBlockNum) {
+					return fmt.Errorf(
+						"PoH error: expected last slot to be %d, got %d (%s)",
+						assertLastSlot,
+						lastBlockNum,
+						solana.Hash(blockhash),
+					)
+				} else {
+					klog.Infof(
+						"Assertion successful: Last block for epoch %d is %d (blockhash=%s)",
+						epochNum,
+						lastBlockNum,
+						solana.Hash(blockhash),
+					)
+				}
 			}
-			if assertLastHash != "" && assertLastHash != solana.Hash(blockhash).String() {
-				return fmt.Errorf(
-					"PoH error: expected last hash to be %s (%d), got %s (%d)",
-					assertLastHash,
-					assertLastSlot,
-					solana.Hash(blockhash),
-					lastBlockNum,
-				)
+			if assertLastHash != "" {
+				if assertLastHash != solana.Hash(blockhash).String() {
+					return fmt.Errorf(
+						"PoH error: expected last hash to be %s (%d), got %s (%d)",
+						assertLastHash,
+						assertLastSlot,
+						solana.Hash(blockhash),
+						lastBlockNum,
+					)
+				} else {
+					klog.Infof(
+						"Assertion successful: Last blockhash for epoch %d is %s (block=%d)",
+						epochNum,
+						solana.Hash(blockhash),
+						lastBlockNum,
+					)
+				}
 			}
 		}
 
@@ -469,17 +706,15 @@ func readAllSignatures(buf []byte) ([]solana.Signature, error) {
 		return nil, fmt.Errorf("not enough bytes left to read %d signatures", numSigs)
 	}
 
-	var sigs []solana.Signature
+	sigs := make([]solana.Signature, numSigs)
 	for i := 0; i < numSigs; i++ {
-		var sig solana.Signature
-		numRead, err := decoder.Read(sig[:])
+		numRead, err := decoder.Read(sigs[i][:])
 		if err != nil {
 			return nil, err
 		}
 		if numRead != 64 {
 			return nil, fmt.Errorf("unexpected signature length %d", numRead)
 		}
-		sigs = append(sigs, sig)
 	}
 	return sigs, nil
 }
