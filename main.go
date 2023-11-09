@@ -56,6 +56,11 @@ func main() {
 	flag.StringVar(&assertFirstHash, "assert-first-hash", "", "Assert first blockhash")
 	flag.Parse()
 
+	if isAnyOf(flag.Arg(0), "-v", "--version", "version", "v") {
+		printVersion()
+		return
+	}
+
 	if carPath == "" {
 		klog.Exit("error: No CAR file given")
 	}
