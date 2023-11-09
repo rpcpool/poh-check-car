@@ -4,8 +4,21 @@ Validate PoH (proof of history) on the data in an epoch CAR file.
 
 ## Usage
 
+
 ```bash
-$ poh-check-car --workers=12 \
+$ poh-check-car \
+	--workers=12 \
+	--auto \
+	--epoch=0 \
+	--car=/media/laptop/solana-history/cars/epoch-0.car
+```
+
+OR with more options:
+
+```bash
+$ poh-check-car \
+	--workers=12 \
+	--epoch=0 \
 	--car=/media/laptop/solana-history/cars/epoch-0.car \
 	--prevhash=5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d
 ```
