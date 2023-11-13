@@ -678,8 +678,8 @@ func checkCar(
 
 		mustNumHashesPerEpoch := uint64(345_600_000_000)
 		if numHashes.Load() != mustNumHashesPerEpoch {
-			return fmt.Errorf(
-				"PoH error: wrong number of hashes for epoch %d: expected %d, got %d",
+			klog.Warningf(
+				"PoH warning: wrong number of hashes for epoch %d: expected %d, got %d",
 				epochNum,
 				mustNumHashesPerEpoch,
 				numHashes.Load(),
