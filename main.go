@@ -609,9 +609,9 @@ func checkCar(
 		waitResultsReceived.Wait()
 		klog.Infof("All results received")
 
-		klog.Infof("Waiting for all assertions to finish...")
+		klog.Infof("Waiting for remaining jobs to finish...")
 		wg.Wait()
-		klog.Infof("All assertions finished")
+		klog.Infof("All jobs finished")
 
 		// print last blockHash:
 		klog.Infof(
