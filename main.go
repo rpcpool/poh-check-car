@@ -559,10 +559,16 @@ func checkCar(
 			break
 		}
 		numNodesSeen++
-		kind := iplddecoders.Kind(block.RawData()[1])
+
+		klog.Infof("Node %d: Block CID: %s\n", numNodesSeen, block.Cid().String())
+		rawData := block.RawData()
+		if len(rawData) < 2 {
+			return fmt.Errorf("error: RawData too short (len=%d) for block at node %d\n", len(rawData), numNodesSeen)
+		}
+		kind := iplddecoders.Kind(rawData[1])
 		{
 			if kind == iplddecoders.KindBlock {
-				block, err := iplddecoders.DecodeBlock(block.RawData())
+				block, err := iplddecoders.DecodeBlock(rawData)
 				if err != nil {
 					return fmt.Errorf("failed to decode block: %w", err)
 				}
