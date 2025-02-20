@@ -213,7 +213,7 @@ func checkCar(
 	)
 
 	wg := &sync.WaitGroup{}
-	blockhash := [32]byte{}
+	blockhash := solana.Hash([32]byte{})
 	numCheckedEntries := new(atomic.Uint64)
 	numHashes := new(atomic.Uint64)
 	numBlocks := new(atomic.Uint64)
@@ -295,29 +295,29 @@ func checkCar(
 								"PoH error: expected first slot in CAR to be %d, got %d (%s)",
 								limits.FirstBlockSlot,
 								resValue,
-								solana.Hash(blockhash),
+								blockhash,
 							)
 						} else {
 							klog.Infof(
 								"Assertion successful: First block in CAR for epoch %d is %d (blockhash=%s)",
 								epochNum,
 								resValue,
-								solana.Hash(blockhash),
+								blockhash,
 							)
 						}
-						if err := limits.AssertFirstBlockhash(solana.Hash(blockhash)); err != nil {
+						if err := limits.AssertFirstBlockhash(blockhash); err != nil {
 							klog.Exitf(
 								"PoH error: expected first blockhash in CAR to be %s (%d), got %s (%d)",
 								limits.FirstBlockhash,
 								limits.FirstBlockSlot,
-								solana.Hash(blockhash),
+								blockhash,
 								resValue,
 							)
 						} else {
 							klog.Infof(
 								"Assertion successful: First blockhash in CAR for epoch %d is %s (block=%d)",
 								epochNum,
-								solana.Hash(blockhash),
+								blockhash,
 								resValue,
 							)
 						}
@@ -415,6 +415,20 @@ func checkCar(
 				if err != nil {
 					return fmt.Errorf("failed to decode block: %w", err)
 				}
+				{
+					if lastBlockNum == -1 {
+						err := limits.AssertPreviousBlockSlot(uint64(block.Meta.Parent_slot))
+						if err != nil {
+							return fmt.Errorf("PoH error: expected previous epoch's last slot to be %d, got %d", limits.PreviousBlockSlot, block.Meta.Parent_slot)
+						} else {
+							klog.Infof(
+								"Assertion successful: Previous epoch's last slot is %d (as satted in the firstBlock.ParentSlot in the CAR file)",
+								block.Meta.Parent_slot,
+							)
+						}
+						// TODO: check the previous blockhash
+					}
+				}
 				if block.Slot < lastBlockNum {
 					return fmt.Errorf("unexpected block number: %d is less than %d", block.Slot, lastBlockNum)
 				}
@@ -467,7 +481,7 @@ func checkCar(
 			"Last block hash for slot %d for epoch %d: %s",
 			epochNum,
 			lastBlockNum,
-			solana.Hash(blockhash),
+			blockhash,
 		)
 		klog.Infof(
 			"Number of checked entries for epoch %d: %s",
@@ -493,29 +507,29 @@ func checkCar(
 					"PoH error: expected last slot in CAR to be %d, got %d (%s)",
 					limits.LastBlockSlot,
 					lastBlockNum,
-					solana.Hash(blockhash),
+					blockhash,
 				)
 			} else {
 				klog.Infof(
 					"Assertion successful: Last block in CAR for epoch %d is %d (blockhash=%s)",
 					epochNum,
 					lastBlockNum,
-					solana.Hash(blockhash),
+					blockhash,
 				)
 			}
-			if err := limits.AssertLastBlockhash(solana.Hash(blockhash)); err != nil {
+			if err := limits.AssertLastBlockhash(blockhash); err != nil {
 				return fmt.Errorf(
 					"PoH error: expected last blockhash in CAR to be %s (%d), got %s (%d)",
 					limits.LastBlockhash,
 					limits.LastBlockSlot,
-					solana.Hash(blockhash),
+					blockhash,
 					lastBlockNum,
 				)
 			} else {
 				klog.Infof(
 					"Assertion successful: Last blockhash in CAR for epoch %d is %s (block=%d)",
 					epochNum,
-					solana.Hash(blockhash),
+					blockhash,
 					lastBlockNum,
 				)
 			}
