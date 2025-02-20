@@ -426,7 +426,7 @@ func checkCar(
 								block.Meta.Parent_slot,
 							)
 						}
-						// TODO: check the previous blockhash
+						// NOTE: previous blockhash is checked by building the chain of hashes on top of it.
 					}
 				}
 				if block.Slot < lastBlockNum {
