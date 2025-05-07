@@ -91,7 +91,7 @@ func main() {
 		if limits.StartSlot.IsSet() {
 			startBlock, err := helper.GetBlock((limits.StartSlot.Get()))
 			if err != nil {
-				klog.Exitf("error: failed to get block for start slot %d (you need to specify a slot that has a produced block): %s", limits.StartSlot, err)
+				klog.Exitf("error: failed to get block for start slot %d (you need to specify a slot that has a produced block): %s", limits.StartSlot.Get(), err)
 			}
 			limits.FirstBlockhash = startBlock.Blockhash // TODO: ????
 			limits.PreviousBlockhash = startBlock.PreviousBlockhash
