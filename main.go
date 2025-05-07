@@ -45,6 +45,7 @@ func main() {
 	flag.StringVar(&carPath, "car", "", "Path to CAR file")
 	flag.UintVar(&numWorkers, "workers", uint(runtime.NumCPU()), "Number of workers")
 	flag.BoolVar(&noProgress, "no-progress", false, "Disable progress bar")
+	flag.BoolVar(&noProgress, "silent", noProgress, "Disable progress bar")
 	flag.Int64Var(&epochNum, "epoch", -1, "Epoch number")
 	flag.StringVar(&rpcEndpoint, "rpc", rpc.MainNetBeta.RPC, "RPC endpoint")
 	limitFlags.AddToFlagSet(flag.CommandLine)
