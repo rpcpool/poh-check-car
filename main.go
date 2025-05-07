@@ -102,7 +102,7 @@ func main() {
 		if limits.EndSlot.IsSet() {
 			endBlock, err := helper.GetBlock((limits.EndSlot.Get()))
 			if err != nil {
-				klog.Exitf("error: failed to get block for end slot %d (you need to specify a slot that has a produced block): %s", limits.EndSlot, err)
+				klog.Exitf("error: failed to get block for end slot %d (you need to specify a slot that has a produced block): %s", limits.EndSlot.Get(), err)
 			}
 			limits.LastBlockhash = endBlock.Blockhash
 			limits.LastBlockSlot = limits.EndSlot.Get()
