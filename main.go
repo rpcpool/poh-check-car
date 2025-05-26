@@ -89,7 +89,8 @@ func main() {
 	// spew.Dump(limits)
 	if limits.isCustomRange() {
 		// need to reset the blockhashes
-		if limits.StartSlot.IsSet() {
+		epochStart, epochEnd := CalcEpochLimits(uint64(epochNum))
+		if limits.StartSlot.IsSet() && epochStart != limits.StartSlot.Get() {
 			startBlock, err := helper.GetBlock((limits.StartSlot.Get()))
 			if err != nil {
 				klog.Exitf("error: failed to get block for start slot %d (you need to specify a slot that has a produced block): %s", limits.StartSlot.Get(), err)
@@ -100,7 +101,7 @@ func main() {
 			limits.PreviousBlockSlot = startBlock.ParentSlot
 		}
 
-		if limits.EndSlot.IsSet() {
+		if limits.EndSlot.IsSet() && epochEnd != limits.EndSlot.Get() {
 			endBlock, err := helper.GetBlock((limits.EndSlot.Get()))
 			if err != nil {
 				klog.Exitf("error: failed to get block for end slot %d (you need to specify a slot that has a produced block): %s", limits.EndSlot.Get(), err)
@@ -221,7 +222,12 @@ func checkCar(
 	}()
 
 	prevBlockHash := poh.State(limits.PreviousBlockhash)
-	klog.Infof("epoch %d: prevBlockHash: %s", epochNum, solana.Hash(prevBlockHash))
+	klog.Infof(
+		"epoch %d: prevBlockHash: %d(%s)",
+		epochNum,
+		limits.PreviousBlockSlot,
+		solana.Hash(prevBlockHash),
+	)
 
 	signatureAccumulator := make([][]byte, 0)
 
@@ -738,6 +744,13 @@ func alignToPageSize(size int) int {
 // CalcEpochForSlot returns the epoch for the given slot.
 func CalcEpochForSlot(slot uint64) uint64 {
 	return slot / EpochLen
+}
+
+// CalcEpochLimits returns the start and stop slots for the given epoch (inclusive).
+func CalcEpochLimits(epoch uint64) (uint64, uint64) {
+	epochStart := epoch * EpochLen
+	epochStop := epochStart + EpochLen - 1
+	return epochStart, epochStop
 }
 
 const EpochLen = 432000

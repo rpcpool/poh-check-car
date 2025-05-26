@@ -268,10 +268,28 @@ func (el *EpochLimits) String() string {
 	if el.Epoch == 0 {
 		buf.WriteString(fmt.Sprintf("NO prev epoch; genesis hash: %s\n", el.PreviousBlockhash))
 	} else {
-		buf.WriteString(fmt.Sprintf("prev epoch(%d):%s... %d(%s)\n", el.Epoch-1, strings.Repeat(" ", paddingLen), el.PreviousBlockSlot, el.PreviousBlockhash))
+		buf.WriteString(fmt.Sprintf(
+			"prev epoch(%d):%s... %d(%s)\n",
+			CalcEpochForSlot(el.PreviousBlockSlot),
+			strings.Repeat(" ", paddingLen),
+			el.PreviousBlockSlot,
+			el.PreviousBlockhash,
+		))
 	}
-	buf.WriteString(fmt.Sprintf("THIS epoch(%d): %d(%s) ... %d(%s)\n", el.Epoch, el.FirstBlockSlot, el.FirstBlockhash, el.LastBlockSlot, el.LastBlockhash))
-	buf.WriteString(fmt.Sprintf("next epoch(%d): %d(%s) ...\n", el.Epoch+1, el.NextBlockSlot, el.NextBlockhash))
+	buf.WriteString(fmt.Sprintf(
+		"THIS epoch(%d): %d(%s) ... %d(%s)\n",
+		CalcEpochForSlot(el.FirstBlockSlot),
+		el.FirstBlockSlot,
+		el.FirstBlockhash,
+		el.LastBlockSlot,
+		el.LastBlockhash,
+	))
+	buf.WriteString(fmt.Sprintf(
+		"next epoch(%d): %d(%s) ...\n",
+		CalcEpochForSlot(el.NextBlockSlot),
+		el.NextBlockSlot,
+		el.NextBlockhash,
+	))
 	return buf.String()
 }
 
@@ -403,14 +421,15 @@ func (el *EpochLimits) ApplyOverrides(lfs *LimitFlags, fs *flag.FlagSet) error {
 		}
 	}
 	{
-		if isFlagPassed("start", fs) {
+		epochStart, epochEnd := CalcEpochLimits(uint64(el.Epoch))
+		if isFlagPassed("start", fs) && lfs.StartSlot.Get() != epochStart {
 			fmt.Printf("Overriding start slot with %d\n", lfs.StartSlot.Get())
 			el.StartSlot.SetValue(uint64(lfs.StartSlot.Get()))
 			el.FirstBlockSlot = lfs.StartSlot.Get() // We are overriding the first block slot to be the start slot.
 		} else {
 			el.StartSlot.Unset()
 		}
-		if isFlagPassed("end", fs) {
+		if isFlagPassed("end", fs) && lfs.EndSlot.Get() != epochEnd {
 			fmt.Printf("Overriding end slot with %d\n", lfs.EndSlot.Get())
 			// TODO: check if start is set.
 			if lfs.EndSlot.Get() < (el.StartSlot.Get()) {
