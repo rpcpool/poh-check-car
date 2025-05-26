@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gagliardetto/solana-go"
@@ -115,6 +116,86 @@ type EpochLimits struct {
 
 	NextBlockSlot uint64 // The slot of the first block of the next epoch.
 	NextBlockhash solana.Hash
+
+	StartSlot OptionalUint64 // The slot from which to start poh verification.
+	EndSlot   OptionalUint64 // The slot at which to end poh verification.
+}
+
+// GetActualStartStopSlots() (start, stop uint64)
+func (el *EpochLimits) GetActualStartStopSlots() (start, stop uint64) {
+	if el.StartSlot.IsSet() {
+		start = el.StartSlot.Get()
+	} else {
+		start = el.FirstBlockSlot
+	}
+	if el.EndSlot.IsSet() {
+		stop = el.EndSlot.Get()
+	} else {
+		stop = el.LastBlockSlot
+	}
+	if start > stop {
+		panic(fmt.Sprintf("start slot %d is greater than stop slot %d", start, stop))
+	}
+	return start, stop
+}
+
+type OptionalUint64 struct {
+	Value uint64
+	isSet bool
+}
+
+// implement the flag.Value interface
+func (ou *OptionalUint64) String() string {
+	if ou == nil {
+		return "nil"
+	}
+	if !ou.isSet {
+		return "unset"
+	}
+	return fmt.Sprintf("%d", ou.Value)
+}
+
+func (ou *OptionalUint64) Set(value string) error {
+	if ou == nil {
+		ou = &OptionalUint64{}
+	}
+	v, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return fmt.Errorf("failed to parse value %s: %s", value, err)
+	}
+	ou.Value = v
+	ou.isSet = true
+	return nil
+}
+
+func (ou *OptionalUint64) SetValue(value uint64) {
+	if ou == nil {
+		ou = &OptionalUint64{}
+	}
+	ou.Value = value
+	ou.isSet = true
+}
+
+func (ou *OptionalUint64) IsSet() bool {
+	if ou == nil {
+		return false
+	}
+	return ou.isSet
+}
+
+func (ou *OptionalUint64) Get() uint64 {
+	if ou == nil {
+		panic("OptionalUint64 is nil")
+	}
+	return ou.Value
+}
+
+func (ou *OptionalUint64) Unset() {
+	if ou == nil {
+		ou = &OptionalUint64{}
+	}
+	ou.Value = 0
+	ou.isSet = false
 }
 
 // AssertPreviousBlockSlot(candidate uint64) error
@@ -187,10 +268,28 @@ func (el *EpochLimits) String() string {
 	if el.Epoch == 0 {
 		buf.WriteString(fmt.Sprintf("NO prev epoch; genesis hash: %s\n", el.PreviousBlockhash))
 	} else {
-		buf.WriteString(fmt.Sprintf("prev epoch(%d):%s... %d(%s)\n", el.Epoch-1, strings.Repeat(" ", paddingLen), el.PreviousBlockSlot, el.PreviousBlockhash))
+		buf.WriteString(fmt.Sprintf(
+			"prev epoch(%d):%s... %d(%s)\n",
+			CalcEpochForSlot(el.PreviousBlockSlot),
+			strings.Repeat(" ", paddingLen),
+			el.PreviousBlockSlot,
+			el.PreviousBlockhash,
+		))
 	}
-	buf.WriteString(fmt.Sprintf("THIS epoch(%d): %d(%s) ... %d(%s)\n", el.Epoch, el.FirstBlockSlot, el.FirstBlockhash, el.LastBlockSlot, el.LastBlockhash))
-	buf.WriteString(fmt.Sprintf("next epoch(%d): %d(%s) ...\n", el.Epoch+1, el.NextBlockSlot, el.NextBlockhash))
+	buf.WriteString(fmt.Sprintf(
+		"THIS epoch(%d): %d(%s) ... %d(%s)\n",
+		CalcEpochForSlot(el.FirstBlockSlot),
+		el.FirstBlockSlot,
+		el.FirstBlockhash,
+		el.LastBlockSlot,
+		el.LastBlockhash,
+	))
+	buf.WriteString(fmt.Sprintf(
+		"next epoch(%d): %d(%s) ...\n",
+		CalcEpochForSlot(el.NextBlockSlot),
+		el.NextBlockSlot,
+		el.NextBlockhash,
+	))
 	return buf.String()
 }
 
@@ -241,6 +340,9 @@ type LimitFlags struct {
 
 	NextBlockSlot uint64
 	NextBlockhash string
+
+	StartSlot OptionalUint64
+	EndSlot   OptionalUint64
 }
 
 func (el *LimitFlags) AddToFlagSet(fs *flag.FlagSet) {
@@ -255,6 +357,9 @@ func (el *LimitFlags) AddToFlagSet(fs *flag.FlagSet) {
 
 	fs.Uint64Var(&el.NextBlockSlot, "next-slot", 0, "The slot of the first block of the next epoch.")
 	fs.StringVar(&el.NextBlockhash, "next-hash", "", "The hash of the first block of the next epoch.")
+
+	fs.Var(&el.StartSlot, "start", "The slot from which to start poh verification.")
+	fs.Var(&el.EndSlot, "end", "The slot at which to end poh verification.")
 }
 
 func isFlagPassed(name string, fs *flag.FlagSet) bool {
@@ -315,8 +420,36 @@ func (el *EpochLimits) ApplyOverrides(lfs *LimitFlags, fs *flag.FlagSet) error {
 			el.NextBlockhash = solana.MustHashFromBase58(lfs.NextBlockhash)
 		}
 	}
+	{
+		epochStart, epochEnd := CalcEpochLimits(uint64(el.Epoch))
+		if isFlagPassed("start", fs) && lfs.StartSlot.Get() != epochStart {
+			fmt.Printf("Overriding start slot with %d\n", lfs.StartSlot.Get())
+			el.StartSlot.SetValue(uint64(lfs.StartSlot.Get()))
+			el.FirstBlockSlot = lfs.StartSlot.Get() // We are overriding the first block slot to be the start slot.
+		} else {
+			el.StartSlot.Unset()
+		}
+		if isFlagPassed("end", fs) && lfs.EndSlot.Get() != epochEnd {
+			fmt.Printf("Overriding end slot with %d\n", lfs.EndSlot.Get())
+			// TODO: check if start is set.
+			if lfs.EndSlot.Get() < (el.StartSlot.Get()) {
+				return fmt.Errorf("end slot must be greater than or equal to start slot")
+			}
+			el.EndSlot = lfs.EndSlot
+			el.LastBlockSlot = (lfs.EndSlot.Get()) // We are overriding the last block slot to be the end slot.
+		} else {
+			el.EndSlot.Unset()
+		}
+	}
 
 	return nil
+}
+
+func (el *EpochLimits) isCustomRange() bool {
+	if el.StartSlot.IsSet() || el.EndSlot.IsSet() {
+		return true
+	}
+	return false
 }
 
 // GetEpochLimits(epoch uint64) (*EpochLimits, error)

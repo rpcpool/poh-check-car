@@ -45,6 +45,7 @@ func main() {
 	flag.StringVar(&carPath, "car", "", "Path to CAR file")
 	flag.UintVar(&numWorkers, "workers", uint(runtime.NumCPU()), "Number of workers")
 	flag.BoolVar(&noProgress, "no-progress", false, "Disable progress bar")
+	flag.BoolVar(&noProgress, "silent", noProgress, "Disable progress bar")
 	flag.Int64Var(&epochNum, "epoch", -1, "Epoch number")
 	flag.StringVar(&rpcEndpoint, "rpc", rpc.MainNetBeta.RPC, "RPC endpoint")
 	limitFlags.AddToFlagSet(flag.CommandLine)
@@ -86,6 +87,31 @@ func main() {
 	// spew.Dump(limits)
 	limits.ApplyOverrides(limitFlags, flag.CommandLine)
 	// spew.Dump(limits)
+	if limits.isCustomRange() {
+		// need to reset the blockhashes
+		epochStart, epochEnd := CalcEpochLimits(uint64(epochNum))
+		if limits.StartSlot.IsSet() && epochStart != limits.StartSlot.Get() {
+			startBlock, err := helper.GetBlock((limits.StartSlot.Get()))
+			if err != nil {
+				klog.Exitf("error: failed to get block for start slot %d (you need to specify a slot that has a produced block): %s", limits.StartSlot.Get(), err)
+			}
+			limits.FirstBlockhash = startBlock.Blockhash // TODO: ????
+			limits.PreviousBlockhash = startBlock.PreviousBlockhash
+
+			limits.PreviousBlockSlot = startBlock.ParentSlot
+		}
+
+		if limits.EndSlot.IsSet() && epochEnd != limits.EndSlot.Get() {
+			endBlock, err := helper.GetBlock((limits.EndSlot.Get()))
+			if err != nil {
+				klog.Exitf("error: failed to get block for end slot %d (you need to specify a slot that has a produced block): %s", limits.EndSlot.Get(), err)
+			}
+			limits.LastBlockhash = endBlock.Blockhash
+			limits.LastBlockSlot = limits.EndSlot.Get()
+		}
+		fmt.Println("PoH checking only for custom range:")
+		fmt.Println(limits.String())
+	}
 
 	limits.PrintAssertions()
 
@@ -188,13 +214,20 @@ func checkCar(
 
 	startedAt := time.Now()
 	numNodesSeen := 0
+	numBlocksWhereCheckedPoH := 0
 	defer func() {
 		klog.Infof("Finished in %s", time.Since(startedAt))
 		klog.Infof("Read %d nodes from CAR file", numNodesSeen)
+		klog.Infof("Checked %d blocks for PoH", numBlocksWhereCheckedPoH)
 	}()
 
 	prevBlockHash := poh.State(limits.PreviousBlockhash)
-	klog.Infof("epoch %d: prevBlockHash: %s", epochNum, solana.Hash(prevBlockHash))
+	klog.Infof(
+		"epoch %d: prevBlockHash: %d(%s)",
+		epochNum,
+		limits.PreviousBlockSlot,
+		solana.Hash(prevBlockHash),
+	)
 
 	signatureAccumulator := make([][]byte, 0)
 
@@ -245,8 +278,15 @@ func checkCar(
 	lastSecondTick := time.Now()
 	lastNumHashes := uint64(0)
 	lastNumEntries := uint64(0)
+	lastNumBlocks := uint64(0)
 
 	isFirstBlock := true
+	numExpectedTotalBlocks := float64(432000)
+	{
+		actualStart, actualStop := limits.GetActualStartStopSlots()
+		numExpectedTotalBlocks = float64(actualStop - actualStart + 1)
+	}
+	statTick := time.Second * 2
 
 	go func() {
 		currentSlotNumHashesAccumulator := uint64(0)
@@ -265,9 +305,9 @@ func checkCar(
 				currentSlotNumHashesAccumulator = 0
 				numBlocks.Add(1)
 				blockhash = solana.Hash(prevBlockHash)
-				percentDone := float64(numBlocks.Load()) / float64(432000) * 100
+				percentDone := float64(numBlocks.Load()) / numExpectedTotalBlocks * 100
 				logMsg := fmt.Sprintf("Slot %d (%.2f%%)", resValue, percentDone)
-				if time.Since(lastSecondTick) > time.Second {
+				if time.Since(lastSecondTick) > statTick {
 					lastSecondTick = time.Now()
 					thisNumHashes := numHashes.Load()
 					hashRate := int64(thisNumHashes - lastNumHashes)
@@ -278,10 +318,14 @@ func checkCar(
 						logMsg += fmt.Sprintf(" | %s entries/s", humanize.Comma(entryRate))
 						lastNumEntries = thisNumEntries
 					}
-					{ // estimated total time is 345,600,000,000/hashRate seconds
-						estimatedTotalTime := time.Duration(345_600_000_000/hashRate) * time.Second
+					{ // estimated total time
+						thisNumBlocks := numBlocks.Load()
+						blockRate := int64(thisNumBlocks-lastNumBlocks) / int64(statTick.Seconds())
+						logMsg += fmt.Sprintf(" | %s blocks/s", humanize.Comma(blockRate))
+						estimatedTotalTime := time.Duration(numExpectedTotalBlocks/float64(blockRate)) * time.Second
 						estimatedLeftTime := estimatedTotalTime - time.Since(startedAt)
 						logMsg += fmt.Sprintf(" | %s left", estimatedLeftTime.Round(time.Second))
+						lastNumBlocks = thisNumBlocks
 					}
 
 					lastNumHashes = thisNumHashes
@@ -386,6 +430,8 @@ func checkCar(
 	lastBlockNum := -1
 	entryIndex := -1
 
+	startProcessingElements := !limits.StartSlot.IsSet()
+
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -415,6 +461,21 @@ func checkCar(
 				if err != nil {
 					return fmt.Errorf("failed to decode block: %w", err)
 				}
+				slot := uint64(block.Slot)
+				{
+					if limits.StartSlot.IsSet() {
+						if limits.PreviousBlockSlot == slot {
+							klog.Infof("Starting to process elements at slot %d (after custom start slot %d)", slot, limits.StartSlot.Get())
+							startProcessingElements = true
+							continue
+						}
+						if slot < (limits.StartSlot.Get()) {
+							// skip this block
+							// klog.Infof("Skipping block at slot %d (before custom start slot %d)", slot, limits.StartSlot.Get())
+							continue
+						}
+					}
+				}
 				{
 					if lastBlockNum == -1 {
 						err := limits.AssertPreviousBlockSlot(uint64(block.Meta.Parent_slot))
@@ -422,7 +483,7 @@ func checkCar(
 							return fmt.Errorf("PoH error: expected previous epoch's last slot to be %d, got %d", limits.PreviousBlockSlot, block.Meta.Parent_slot)
 						} else {
 							klog.Infof(
-								"Assertion successful: Previous epoch's last slot is %d (as satted in the firstBlock.ParentSlot in the CAR file)",
+								"Assertion successful: Previous epoch's last slot is %d (as set in the firstBlock.ParentSlot in the CAR file)",
 								block.Meta.Parent_slot,
 							)
 						}
@@ -433,6 +494,20 @@ func checkCar(
 					return fmt.Errorf("unexpected block number: %d is less than %d", block.Slot, lastBlockNum)
 				}
 				lastBlockNum = block.Slot
+
+				{
+					workerInputChan <- slotSignal(
+						uint64(lastBlockNum),
+					)
+					numBlocksWhereCheckedPoH++
+					slot := uint64(lastBlockNum)
+
+					if limits.EndSlot.IsSet() && slot == (limits.EndSlot.Get()) {
+						// skip this block
+						klog.Infof("Finishing PoH at block at slot %d", slot)
+						break
+					}
+				}
 			}
 		}
 
@@ -443,12 +518,10 @@ func checkCar(
 			entryIndex++
 		}
 
-		if kind == iplddecoders.KindBlock {
-			workerInputChan <- slotSignal(
-				uint64(lastBlockNum),
-			)
-		}
 		if kind == iplddecoders.KindEntry || kind == iplddecoders.KindTransaction {
+			if !startProcessingElements {
+				continue
+			}
 			waitExecuted.Add(1)
 			waitResultsReceived.Add(1)
 			numReceivedParsed.Add(1)
@@ -671,6 +744,13 @@ func alignToPageSize(size int) int {
 // CalcEpochForSlot returns the epoch for the given slot.
 func CalcEpochForSlot(slot uint64) uint64 {
 	return slot / EpochLen
+}
+
+// CalcEpochLimits returns the start and stop slots for the given epoch (inclusive).
+func CalcEpochLimits(epoch uint64) (uint64, uint64) {
+	epochStart := epoch * EpochLen
+	epochStop := epochStart + EpochLen - 1
+	return epochStart, epochStop
 }
 
 const EpochLen = 432000
