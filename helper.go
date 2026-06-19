@@ -505,6 +505,26 @@ func (h *Helper) GetEpochLimits() (*EpochLimits, error) {
 
 		limits.LastBlockSlot = block.ParentSlot
 		limits.LastBlockhash = block.PreviousBlockhash
+
+		// Sanity-check the derived boundary against the epoch arithmetic.
+		// LastBlockSlot is the parent slot of the next epoch's first block. If the
+		// RPC's getBlocks index has a gap at the start of the next epoch (e.g. a node
+		// still backfilling), GetFirstProducedBlock returns a block several slots into
+		// the next epoch, whose parent slot then also lands inside the next epoch.
+		// That produces a bogus "last slot" and a confusing mismatch only after the
+		// entire CAR has been checked (~hours). Fail fast with an actionable message.
+		if CalcEpochForSlot(limits.LastBlockSlot) != epochNum {
+			return nil, fmt.Errorf(
+				"RPC returned inconsistent epoch-boundary data: derived last slot of epoch %d is %d, but that slot is in epoch %d "+
+					"(it is the parent slot of %d, the first block of epoch %d the RPC reported — likely a getBlocks gap on a backfilling node). "+
+					"Retry against a fully-synced RPC, or override with --last-slot/--last-hash",
+				epochNum,
+				limits.LastBlockSlot,
+				CalcEpochForSlot(limits.LastBlockSlot),
+				limits.NextBlockSlot,
+				nextEpochNum,
+			)
+		}
 	}
 
 	return limits, nil
