@@ -644,7 +644,43 @@ func retryExponentialBackoff[T any](numRetries uint, f func() (T, error)) (T, er
 	return res, errors.Join(errs...)
 }
 
+// messageVersionV1Prefix is the first byte of a v1 (SIMD-0385) transaction
+// (0x80|1). A legacy/v0 transaction begins with a compact-u16 signature count
+// whose first byte is always < 0x80, so this byte unambiguously identifies v1.
+const messageVersionV1Prefix = 0x81
+
 func readAllSignatures(buf []byte) ([]solana.Signature, error) {
+	if len(buf) == 0 {
+		return nil, fmt.Errorf("empty transaction bytes")
+	}
+
+	// v1 (SIMD-0385) inverts the wire layout: the signatures live at the END,
+	// after the message, with no leading count. The layout is
+	//   [0x81][NumRequiredSignatures][...message...][signature 0]...[signature N]
+	// so the signatures are exactly the trailing NumRequiredSignatures*64 bytes,
+	// and NumRequiredSignatures is the byte right after the 0x81 prefix.
+	if buf[0] == messageVersionV1Prefix {
+		if len(buf) < 2 {
+			return nil, fmt.Errorf("v1 transaction too short")
+		}
+		numSigs := int(buf[1])
+		if numSigs == 0 {
+			return nil, fmt.Errorf("no signatures")
+		}
+		sigBytes := numSigs * 64
+		// There must be a message before the trailing signatures.
+		if len(buf) <= sigBytes {
+			return nil, fmt.Errorf("not enough bytes left to read %d v1 signatures", numSigs)
+		}
+		start := len(buf) - sigBytes
+		sigs := make([]solana.Signature, numSigs)
+		for i := 0; i < numSigs; i++ {
+			copy(sigs[i][:], buf[start+i*64:start+(i+1)*64])
+		}
+		return sigs, nil
+	}
+
+	// legacy / v0: [compact-u16 numSignatures][signature 0][signature 1]...
 	decoder := bin.NewCompactU16Decoder(buf)
 	numSigs, err := decoder.ReadCompactU16()
 	if err != nil {
