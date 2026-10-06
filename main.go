@@ -25,6 +25,7 @@ import (
 	"github.com/rpcpool/poh-check-car/poh"
 	"github.com/rpcpool/yellowstone-faithful/ipld/ipldbindcode"
 	"github.com/rpcpool/yellowstone-faithful/iplddecoders"
+	"github.com/rpcpool/yellowstone-faithful/slottools"
 	concurrently "github.com/tejzpr/ordered-concurrently/v3"
 	"k8s.io/klog"
 )
@@ -40,6 +41,7 @@ func main() {
 		noProgress  bool
 		epochNum    int64
 		rpcEndpoint string
+		network     string
 		limitFlags  = new(LimitFlags)
 	)
 	flag.StringVar(&carPath, "car", "", "Path to CAR file")
@@ -48,6 +50,7 @@ func main() {
 	flag.BoolVar(&noProgress, "silent", noProgress, "Disable progress bar")
 	flag.Int64Var(&epochNum, "epoch", -1, "Epoch number")
 	flag.StringVar(&rpcEndpoint, "rpc", rpc.MainNetBeta.RPC, "RPC endpoint")
+	flag.StringVar(&network, "network", "", "Use this cluster's epoch schedule (mainnet, devnet, testnet) instead of asking the RPC")
 	limitFlags.AddToFlagSet(flag.CommandLine)
 	flag.Parse()
 
@@ -74,6 +77,14 @@ func main() {
 	}
 	helper := NewHelper(uint64(epochNum), rpc.New(rpcEndpoint))
 
+	// Epoch boundaries differ per cluster (testnet had warmup epochs).
+	epochSchedule, err := helper.GetEpochSchedule(network)
+	if err != nil {
+		klog.Exitf("error: failed to get epoch schedule: %s", err)
+	}
+	slottools.SetEpochSchedule(epochSchedule)
+	klog.Infof("Epoch schedule: %s", epochSchedule)
+
 	limits, err := helper.GetEpochLimits()
 	if err != nil {
 		klog.Exitf("error: failed to get epoch limits: %s", err)
@@ -89,7 +100,7 @@ func main() {
 	// spew.Dump(limits)
 	if limits.isCustomRange() {
 		// need to reset the blockhashes
-		epochStart, epochEnd := CalcEpochLimits(uint64(epochNum))
+		epochStart, epochEnd := slottools.CalcEpochLimits(uint64(epochNum))
 		if limits.StartSlot.IsSet() && epochStart != limits.StartSlot.Get() {
 			startBlock, err := helper.GetBlock((limits.StartSlot.Get()))
 			if err != nil {
@@ -297,10 +308,10 @@ func checkCar(
 			case error:
 				panic(fmt.Errorf("error: %w", resValue))
 			case uint64:
-				if CalcEpochForSlot(resValue) == epochNum {
+				if slottools.CalcEpochForSlot(resValue) == epochNum {
 					numHashes.Add(currentSlotNumHashesAccumulator)
 				} else {
-					panic(fmt.Sprintf("error: unexpected slot %d from epoch %d", resValue, CalcEpochForSlot(resValue)))
+					panic(fmt.Sprintf("error: unexpected slot %d from epoch %d", resValue, slottools.CalcEpochForSlot(resValue)))
 				}
 				currentSlotNumHashesAccumulator = 0
 				numBlocks.Add(1)
@@ -567,7 +578,7 @@ func checkCar(
 			humanize.Comma(int64(numHashes.Load())),
 		)
 		// if the last slot is for a different epoch, return an error:
-		if CalcEpochForSlot(uint64(lastBlockNum)) != epochNum {
+		if slottools.CalcEpochForSlot(uint64(lastBlockNum)) != epochNum {
 			return fmt.Errorf(
 				"PoH error: last slot %d is not in epoch %d",
 				lastBlockNum,
@@ -776,17 +787,3 @@ func alignToPageSize(size int) int {
 	mem := uintptr(size + alignment)
 	return int((mem + uintptr(mask)) & ^uintptr(mask))
 }
-
-// CalcEpochForSlot returns the epoch for the given slot.
-func CalcEpochForSlot(slot uint64) uint64 {
-	return slot / EpochLen
-}
-
-// CalcEpochLimits returns the start and stop slots for the given epoch (inclusive).
-func CalcEpochLimits(epoch uint64) (uint64, uint64) {
-	epochStart := epoch * EpochLen
-	epochStop := epochStart + EpochLen - 1
-	return epochStart, epochStop
-}
-
-const EpochLen = 432000
