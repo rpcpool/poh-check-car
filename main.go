@@ -264,7 +264,11 @@ func checkCar(
 	blockhash := solana.Hash([32]byte{})
 	numCheckedEntries := new(atomic.Uint64)
 	numHashes := new(atomic.Uint64)
-	var towerHashes, expectedTowerHashes uint64 // only TowerBFT blocks have a fixed hash count
+	var (
+		hashesPerTick    uint64 // learned from the first TowerBFT block
+		badTowerBlocks   int
+		firstBadTowerErr error
+	)
 	resultsDone := make(chan struct{})
 	numBlocks := new(atomic.Uint64)
 
@@ -321,9 +325,11 @@ func checkCar(
 					if err := blockEntries.checkAlpenglow(slot); err != nil {
 						klog.Exitf("PoH error: %s", err)
 					}
-				} else {
-					towerHashes += blockEntries.numHashes
-					expectedTowerHashes += (slot - resValue.ParentSlot) * towerHashesPerSlot
+				} else if err := blockEntries.checkTower(slot, resValue.ParentSlot, &hashesPerTick); err != nil {
+					if badTowerBlocks == 0 {
+						firstBadTowerErr = err
+					}
+					badTowerBlocks++
 				}
 				blockEntries = newBlockEntryStats()
 				if slottools.CalcEpochForSlot(slot) == epochNum {
@@ -651,12 +657,15 @@ func checkCar(
 			}
 		}
 
-		if towerHashes != expectedTowerHashes {
+		if hashesPerTick > 0 {
+			klog.Infof("TowerBFT hashes per tick for epoch %d: %d", epochNum, hashesPerTick)
+		}
+		if badTowerBlocks > 0 {
 			klog.Warningf(
-				"PoH warning: wrong number of hashes in TowerBFT blocks for epoch %d: expected %d, got %d",
+				"PoH warning: %d TowerBFT blocks in epoch %d break the tick rules; first: %s",
+				badTowerBlocks,
 				epochNum,
-				expectedTowerHashes,
-				towerHashes,
+				firstBadTowerErr,
 			)
 		}
 	}

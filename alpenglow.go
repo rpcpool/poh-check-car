@@ -9,8 +9,8 @@ import (
 	"github.com/rpcpool/yellowstone-faithful/ipld/ipldbindcode"
 )
 
-// TowerBFT PoH: 64 ticks of 12,500 hashes per slot, skipped slots included.
-const towerHashesPerSlot = 64 * 12_500
+// TowerBFT blocks have 64 ticks per slot since their parent, so skipped slots included.
+const towerTicksPerSlot = 64
 
 // blockSignal is sent through the ordered worker pipeline once a block's
 // entries have been queued (in a CAR, a block comes after its entries).
@@ -151,6 +151,9 @@ type blockEntryStats struct {
 	lastIsTick      bool
 	firstBadHashIdx int // first entry with num_hashes != 1, or -1
 	numHashes       uint64
+	tickHashes      uint64 // hashes since the previous tick
+	firstTickHashes uint64 // hashes in the block's first tick
+	unevenTicks     bool   // a later tick had a different hash count than the first
 }
 
 func newBlockEntryStats() blockEntryStats {
@@ -162,8 +165,15 @@ func (s *blockEntryStats) add(entry *ipldbindcode.Entry) {
 	if entry.NumHashes != 1 && s.firstBadHashIdx < 0 {
 		s.firstBadHashIdx = s.numEntries
 	}
+	s.tickHashes += uint64(entry.NumHashes)
 	if isTick {
 		s.numTicks++
+		if s.numTicks == 1 {
+			s.firstTickHashes = s.tickHashes
+		} else if s.tickHashes != s.firstTickHashes {
+			s.unevenTicks = true
+		}
+		s.tickHashes = 0
 	}
 	s.lastIsTick = isTick
 	s.numEntries++
@@ -182,6 +192,25 @@ func (s *blockEntryStats) checkAlpenglow(slot uint64) error {
 		return fmt.Errorf("slot %d: Alpenglow block does not end with a tick", slot)
 	case s.numTicks != 1:
 		return fmt.Errorf("slot %d: Alpenglow block has %d ticks, want 1", slot, s.numTicks)
+	}
+	return nil
+}
+
+// checkTower applies agave's TowerBFT tick rules: 64 ticks per slot since the parent,
+// a trailing tick, and the same hash count in every tick. hashesPerTick is learned
+// from the first block, since mainnet raised it from 12,500 by feature activation.
+func (s *blockEntryStats) checkTower(slot, parentSlot uint64, hashesPerTick *uint64) error {
+	switch wantTicks := int((slot - parentSlot) * towerTicksPerSlot); {
+	case s.numTicks != wantTicks:
+		return fmt.Errorf("slot %d: %d ticks, want %d", slot, s.numTicks, wantTicks)
+	case !s.lastIsTick:
+		return fmt.Errorf("slot %d: block does not end with a tick", slot)
+	case s.unevenTicks:
+		return fmt.Errorf("slot %d: ticks have different hash counts", slot)
+	case *hashesPerTick == 0:
+		*hashesPerTick = s.firstTickHashes
+	case s.firstTickHashes != *hashesPerTick:
+		return fmt.Errorf("slot %d: ticks have %d hashes, earlier blocks had %d", slot, s.firstTickHashes, *hashesPerTick)
 	}
 	return nil
 }

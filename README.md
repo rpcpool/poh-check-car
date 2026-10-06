@@ -45,4 +45,6 @@ If you don't want to see the progress bar, use `--no-progress`.
 
 Epoch boundaries come from the RPC's `getEpochSchedule`. Use `--network=testnet` (or `mainnet`, `devnet`) to skip that call.
 
+TowerBFT blocks must have 64 ticks per slot since their parent, each with the same hash count (learned from the first block); breaks are logged as a warning.
+
 Blocks after the Alpenglow genesis slot must carry block markers and follow Alpenglow PoH: every entry has `num_hashes == 1` and the block ends with a single tick. The genesis slot is read from the genesis certificate marker in the migration epoch's CAR; for other epochs, pass `--alpenglow-genesis-slot` to also catch Alpenglow blocks that lost their markers.

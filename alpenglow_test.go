@@ -219,3 +219,51 @@ func TestBlockEntryStatsAlpenglow(t *testing.T) {
 		})
 	}
 }
+
+// towerSlot returns the entries of a TowerBFT slot: a transaction entry and a tick per tick.
+func towerSlot(numTicks, hashesPerTick int) []*ipldbindcode.Entry {
+	var out []*ipldbindcode.Entry
+	for i := 0; i < numTicks; i++ {
+		out = append(out, entry(1, 2), entry(hashesPerTick-1, 0))
+	}
+	return out
+}
+
+func TestBlockEntryStatsTower(t *testing.T) {
+	tests := []struct {
+		name          string
+		slot, parent  uint64
+		entries       []*ipldbindcode.Entry
+		hashesPerTick uint64
+		wantErr       string
+	}{
+		{name: "valid", slot: 10, parent: 9, entries: towerSlot(64, 100)},
+		{name: "skipped slots", slot: 12, parent: 9, entries: towerSlot(192, 100), hashesPerTick: 100},
+		{name: "too few ticks", slot: 12, parent: 9, entries: towerSlot(64, 100), wantErr: "64 ticks, want 192"},
+		{name: "trailing entry", slot: 10, parent: 9, entries: append(towerSlot(64, 100), entry(1, 1)), wantErr: "does not end with a tick"},
+		{name: "uneven ticks", slot: 10, parent: 9, entries: append(towerSlot(63, 100), entry(5, 0)), wantErr: "different hash counts"},
+		{name: "hashes per tick changed", slot: 10, parent: 9, entries: towerSlot(64, 100), hashesPerTick: 39062, wantErr: "ticks have 100 hashes, earlier blocks had 39062"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newBlockEntryStats()
+			for _, e := range tt.entries {
+				s.add(e)
+			}
+			hpt := tt.hashesPerTick
+			err := s.checkTower(tt.slot, tt.parent, &hpt)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if hpt != 100 {
+					t.Fatalf("hashes per tick = %d, want 100", hpt)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("got error %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
