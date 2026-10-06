@@ -471,6 +471,9 @@ func checkCar(
 			fmt.Println("EOF")
 			break
 		}
+		if err != nil {
+			return fmt.Errorf("failed to read CAR node %d: %w", numNodesSeen+1, err)
+		}
 		numNodesSeen++
 
 		objectCID := object.Cid()
