@@ -94,10 +94,29 @@ func (h *Helper) GetBlock(slot uint64) (*rpc.GetBlockResult, error) {
 	return block, nil
 }
 
-// GetEpochSchedule returns the named cluster's epoch schedule, or the RPC's when network is empty.
+// genesisHashes identifies each cluster; mainnet and devnet share an epoch schedule, so that can't.
+var genesisHashes = map[string]solana.Hash{
+	"mainnet": solana.MustHashFromBase58("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"),
+	"testnet": solana.MustHashFromBase58("4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"),
+	"devnet":  solana.MustHashFromBase58("EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"),
+}
+
+// GetEpochSchedule returns the RPC's epoch schedule. With network set, it returns that
+// cluster's schedule instead, after checking the RPC belongs to the same cluster.
 func (h *Helper) GetEpochSchedule(network string) (slottools.EpochSchedule, error) {
 	if network != "" {
-		return slottools.EpochScheduleForNetwork(network)
+		schedule, err := slottools.EpochScheduleForNetwork(network)
+		if err != nil {
+			return slottools.EpochSchedule{}, err
+		}
+		got, err := h.GetGenesisHash()
+		if err != nil {
+			return slottools.EpochSchedule{}, fmt.Errorf("failed to get genesis hash: %w", err)
+		}
+		if want := genesisHashes[network]; got != want {
+			return slottools.EpochSchedule{}, fmt.Errorf("--rpc is not a %s node: its genesis hash is %s, want %s", network, got, want)
+		}
+		return schedule, nil
 	}
 	res, err := retryExponentialBackoff(DefaultRetries, func() (*rpc.GetEpochScheduleResult, error) {
 		return h.rpcClient.GetEpochSchedule(h.ctx)

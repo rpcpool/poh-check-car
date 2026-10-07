@@ -51,7 +51,7 @@ func main() {
 	flag.BoolVar(&noProgress, "silent", noProgress, "Disable progress bar")
 	flag.Int64Var(&epochNum, "epoch", -1, "Epoch number")
 	flag.StringVar(&rpcEndpoint, "rpc", rpc.MainNetBeta.RPC, "RPC endpoint")
-	flag.StringVar(&network, "network", "", "Use this cluster's epoch schedule (mainnet, devnet, testnet) instead of asking the RPC")
+	flag.StringVar(&network, "network", "", "Cluster the CAR belongs to (mainnet, devnet, testnet); fails if --rpc is another cluster's node, and uses its epoch schedule instead of asking the RPC")
 	flag.Var(&agGenesis, "alpenglow-genesis-slot", "Slot of the Alpenglow genesis block; later slots must follow Alpenglow rules (default: from the genesis certificate marker, if the CAR has one)")
 	limitFlags.AddToFlagSet(flag.CommandLine)
 	flag.Parse()

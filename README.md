@@ -43,7 +43,7 @@ If you don't want to see the progress bar, use `--no-progress`.
 
 ## Clusters and Alpenglow
 
-Epoch boundaries come from the RPC's `getEpochSchedule`. Use `--network=testnet` (or `mainnet`, `devnet`) to skip that call.
+Epoch boundaries come from the RPC's `getEpochSchedule`. With `--network=testnet` (or `mainnet`, `devnet`), the named cluster's schedule is used instead, and the run fails unless the RPC's genesis hash is that cluster's.
 
 TowerBFT blocks must have 64 ticks per slot since their parent, each with the same hash count (learned from the first block); breaks are logged as a warning.
 
