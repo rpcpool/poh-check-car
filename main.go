@@ -469,6 +469,9 @@ func checkCar(
 	entryIndex := -1
 
 	startProcessingElements := !limits.StartSlot.IsSet()
+	// A block's entries and transactions come before its block node, so with a custom
+	// --start hold them until the block node shows whether the block is in range.
+	var pending []func()
 
 	for {
 		if ctx.Err() != nil {
@@ -503,19 +506,18 @@ func checkCar(
 					return fmt.Errorf("failed to decode block: %w", err)
 				}
 				slot := uint64(block.Slot)
-				{
-					if limits.StartSlot.IsSet() {
-						if limits.PreviousBlockSlot == slot {
-							klog.Infof("Starting to process elements at slot %d (after custom start slot %d)", slot, limits.StartSlot.Get())
-							startProcessingElements = true
-							continue
-						}
-						if slot < (limits.StartSlot.Get()) {
-							// skip this block
-							// klog.Infof("Skipping block at slot %d (before custom start slot %d)", slot, limits.StartSlot.Get())
-							continue
-						}
+				if !startProcessingElements {
+					if slot < limits.StartSlot.Get() {
+						pending = nil
+						entryIndex = -1
+						continue
 					}
+					klog.Infof("Starting PoH at slot %d (custom start slot %d)", slot, limits.StartSlot.Get())
+					for _, send := range pending {
+						send()
+					}
+					pending = nil
+					startProcessingElements = true
 				}
 				{
 					if lastBlockNum == -1 {
@@ -569,20 +571,25 @@ func checkCar(
 		}
 
 		if kind == iplddecoders.KindEntry || kind == iplddecoders.KindTransaction {
-			if !startProcessingElements {
-				continue
+			parentSlot, index, element := uint64(lastBlockNum), entryIndex, object
+			send := func() {
+				waitExecuted.Add(1)
+				waitResultsReceived.Add(1)
+				numReceivedParsed.Add(1)
+				workerInputChan <- newParserTask(
+					parentSlot,
+					index,
+					element,
+					func() {
+						waitExecuted.Done()
+					},
+				)
 			}
-			waitExecuted.Add(1)
-			waitResultsReceived.Add(1)
-			numReceivedParsed.Add(1)
-			workerInputChan <- newParserTask(
-				uint64(lastBlockNum),
-				entryIndex,
-				object,
-				func() {
-					waitExecuted.Done()
-				},
-			)
+			if startProcessingElements {
+				send()
+			} else {
+				pending = append(pending, send)
+			}
 		}
 	}
 	{
