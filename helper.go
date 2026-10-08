@@ -322,12 +322,14 @@ func (el *EpochLimits) String() string {
 		el.LastBlockSlot,
 		el.LastBlockhash,
 	))
-	buf.WriteString(fmt.Sprintf(
-		"next epoch(%d): %d(%s) ...\n",
-		slottools.CalcEpochForSlot(el.NextBlockSlot),
-		el.NextBlockSlot,
-		el.NextBlockhash,
-	))
+	if el.NextBlockSlot != 0 {
+		buf.WriteString(fmt.Sprintf(
+			"next epoch(%d): %d(%s) ...\n",
+			slottools.CalcEpochForSlot(el.NextBlockSlot),
+			el.NextBlockSlot,
+			el.NextBlockhash,
+		))
+	}
 	return buf.String()
 }
 
@@ -490,14 +492,15 @@ func (el *EpochLimits) isCustomRange() bool {
 	return false
 }
 
-// GetEpochLimits(epoch uint64) (*EpochLimits, error)
-func (h *Helper) GetEpochLimits() (*EpochLimits, error) {
+// GetEpochLimits looks up the epoch's boundary blocks. A custom --start or --end replaces
+// the first or last boundary, so skip looking it up: the next epoch may not exist yet.
+func (h *Helper) GetEpochLimits(needFirst, needLast bool) (*EpochLimits, error) {
 	epochNum := h.epoch
 
 	limits := &EpochLimits{
 		Epoch: epochNum,
 	}
-	{
+	if needFirst {
 		firstBlockSlot, err := h.GetFirstProducedBlock(epochNum)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get first available block for epoch %d: %s", epochNum, err)
@@ -527,7 +530,7 @@ func (h *Helper) GetEpochLimits() (*EpochLimits, error) {
 	}
 
 	nextEpochNum := epochNum + 1
-	{
+	if needLast {
 		nextEpochFirstBlock, err := h.GetFirstProducedBlock(nextEpochNum)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get last available block for epoch %d: %s", epochNum, err)

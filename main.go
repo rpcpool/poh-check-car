@@ -87,7 +87,10 @@ func main() {
 	slottools.SetEpochSchedule(epochSchedule)
 	klog.Infof("Epoch schedule: %s", epochSchedule)
 
-	limits, err := helper.GetEpochLimits()
+	epochStart, epochEnd := slottools.CalcEpochLimits(uint64(epochNum))
+	customStart := limitFlags.StartSlot.IsSet() && limitFlags.StartSlot.Get() != epochStart
+	customEnd := limitFlags.EndSlot.IsSet() && limitFlags.EndSlot.Get() != epochEnd
+	limits, err := helper.GetEpochLimits(!customStart, !customEnd)
 	if err != nil {
 		klog.Exitf("error: failed to get epoch limits: %s", err)
 	}
@@ -102,7 +105,6 @@ func main() {
 	// spew.Dump(limits)
 	if limits.isCustomRange() {
 		// need to reset the blockhashes
-		epochStart, epochEnd := slottools.CalcEpochLimits(uint64(epochNum))
 		if limits.StartSlot.IsSet() && epochStart != limits.StartSlot.Get() {
 			startBlock, err := helper.GetBlock((limits.StartSlot.Get()))
 			if err != nil {

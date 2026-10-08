@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gagliardetto/solana-go/rpc"
@@ -44,5 +45,23 @@ func TestGetEpochSchedule(t *testing.T) {
 	}
 	if _, err := testnet.GetEpochSchedule("mars"); err == nil {
 		t.Fatal("unknown --network: want an error")
+	}
+}
+
+func TestGetEpochLimitsSkipsCustomBoundaries(t *testing.T) {
+	var calls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32009,"message":"slot not available"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	helper := NewHelper(1051, rpc.New(srv.URL))
+
+	// A custom --start and --end replace both boundaries, so the in-progress next epoch is never queried.
+	if _, err := helper.GetEpochLimits(false, false); err != nil {
+		t.Fatalf("custom range: got %v", err)
+	}
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("custom range: made %d RPC calls, want 0", n)
 	}
 }
