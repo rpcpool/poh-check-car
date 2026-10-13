@@ -7,9 +7,23 @@ import (
 
 func printVersion() error {
 	fmt.Println("PoH checker for CAR files")
-	fmt.Printf("Tag/Branch: %s\n", GitTag)
-	fmt.Printf("Commit: %s\n", GitCommit)
-	if info, ok := debug.ReadBuildInfo(); ok {
+	tag, commit := GitTag, GitCommit
+	info, ok := debug.ReadBuildInfo()
+	if ok {
+		// A plain `go build` (as the rpcpool role does) sets no ldflags; Go stamps the tag and commit itself.
+		if tag == "" {
+			tag = info.Main.Version
+		}
+		if commit == "" {
+			commit = buildSetting(info, "vcs.revision")
+			if buildSetting(info, "vcs.modified") == "true" {
+				commit += " (modified)"
+			}
+		}
+	}
+	fmt.Printf("Tag/Branch: %s\n", tag)
+	fmt.Printf("Commit: %s\n", commit)
+	if ok {
 		fmt.Printf("More info:\n")
 		for _, setting := range info.Settings {
 			if isAnyOf(setting.Key,
@@ -27,6 +41,15 @@ func printVersion() error {
 		}
 	}
 	return nil
+}
+
+func buildSetting(info *debug.BuildInfo, key string) string {
+	for _, s := range info.Settings {
+		if s.Key == key {
+			return s.Value
+		}
+	}
+	return ""
 }
 
 var (

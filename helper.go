@@ -9,6 +9,7 @@ import (
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/rpcpool/yellowstone-faithful/slottools"
 )
 
 type Helper struct {
@@ -48,7 +49,7 @@ func (h *Helper) GetBlocks(start, end uint64) (rpc.BlocksResult, error) {
 }
 
 func (h *Helper) GetFirstProducedBlock(epoch uint64) (uint64, error) {
-	epochStartSlot := uint64(epoch * EpochLen)
+	epochStartSlot, _ := slottools.CalcEpochLimits(epoch)
 
 	// first try with epochEndSlot + 1000, then with epochEndSlot + 2000, etc.
 	// until we find a block.
@@ -91,6 +92,43 @@ func (h *Helper) GetBlock(slot uint64) (*rpc.GetBlockResult, error) {
 		return nil, err
 	}
 	return block, nil
+}
+
+// genesisHashes identifies each cluster; mainnet and devnet share an epoch schedule, so that can't.
+var genesisHashes = map[string]solana.Hash{
+	"mainnet": solana.MustHashFromBase58("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"),
+	"testnet": solana.MustHashFromBase58("4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"),
+	"devnet":  solana.MustHashFromBase58("EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"),
+}
+
+// GetEpochSchedule returns the RPC's epoch schedule. With network set, it returns that
+// cluster's schedule instead, after checking the RPC belongs to the same cluster.
+func (h *Helper) GetEpochSchedule(network string) (slottools.EpochSchedule, error) {
+	if network != "" {
+		schedule, err := slottools.EpochScheduleForNetwork(network)
+		if err != nil {
+			return slottools.EpochSchedule{}, err
+		}
+		got, err := h.GetGenesisHash()
+		if err != nil {
+			return slottools.EpochSchedule{}, fmt.Errorf("failed to get genesis hash: %w", err)
+		}
+		if want := genesisHashes[network]; got != want {
+			return slottools.EpochSchedule{}, fmt.Errorf("--rpc is not a %s node: its genesis hash is %s, want %s", network, got, want)
+		}
+		return schedule, nil
+	}
+	res, err := retryExponentialBackoff(DefaultRetries, func() (*rpc.GetEpochScheduleResult, error) {
+		return h.rpcClient.GetEpochSchedule(h.ctx)
+	})
+	if err != nil {
+		return slottools.EpochSchedule{}, err
+	}
+	return slottools.EpochSchedule{
+		SlotsPerEpoch:    res.SlotsPerEpoch,
+		FirstNormalEpoch: res.FirstNormalEpoch,
+		FirstNormalSlot:  res.FirstNormalSlot,
+	}, nil
 }
 
 // GetGenesisHash() (string, error)
@@ -270,7 +308,7 @@ func (el *EpochLimits) String() string {
 	} else {
 		buf.WriteString(fmt.Sprintf(
 			"prev epoch(%d):%s... %d(%s)\n",
-			CalcEpochForSlot(el.PreviousBlockSlot),
+			slottools.CalcEpochForSlot(el.PreviousBlockSlot),
 			strings.Repeat(" ", paddingLen),
 			el.PreviousBlockSlot,
 			el.PreviousBlockhash,
@@ -278,18 +316,20 @@ func (el *EpochLimits) String() string {
 	}
 	buf.WriteString(fmt.Sprintf(
 		"THIS epoch(%d): %d(%s) ... %d(%s)\n",
-		CalcEpochForSlot(el.FirstBlockSlot),
+		slottools.CalcEpochForSlot(el.FirstBlockSlot),
 		el.FirstBlockSlot,
 		el.FirstBlockhash,
 		el.LastBlockSlot,
 		el.LastBlockhash,
 	))
-	buf.WriteString(fmt.Sprintf(
-		"next epoch(%d): %d(%s) ...\n",
-		CalcEpochForSlot(el.NextBlockSlot),
-		el.NextBlockSlot,
-		el.NextBlockhash,
-	))
+	if el.NextBlockSlot != 0 {
+		buf.WriteString(fmt.Sprintf(
+			"next epoch(%d): %d(%s) ...\n",
+			slottools.CalcEpochForSlot(el.NextBlockSlot),
+			el.NextBlockSlot,
+			el.NextBlockhash,
+		))
+	}
 	return buf.String()
 }
 
@@ -421,7 +461,7 @@ func (el *EpochLimits) ApplyOverrides(lfs *LimitFlags, fs *flag.FlagSet) error {
 		}
 	}
 	{
-		epochStart, epochEnd := CalcEpochLimits(uint64(el.Epoch))
+		epochStart, epochEnd := slottools.CalcEpochLimits(uint64(el.Epoch))
 		if isFlagPassed("start", fs) && lfs.StartSlot.Get() != epochStart {
 			fmt.Printf("Overriding start slot with %d\n", lfs.StartSlot.Get())
 			el.StartSlot.SetValue(uint64(lfs.StartSlot.Get()))
@@ -452,14 +492,15 @@ func (el *EpochLimits) isCustomRange() bool {
 	return false
 }
 
-// GetEpochLimits(epoch uint64) (*EpochLimits, error)
-func (h *Helper) GetEpochLimits() (*EpochLimits, error) {
+// GetEpochLimits looks up the epoch's boundary blocks. A custom --start or --end replaces
+// the first or last boundary, so skip looking it up: the next epoch may not exist yet.
+func (h *Helper) GetEpochLimits(needFirst, needLast bool) (*EpochLimits, error) {
 	epochNum := h.epoch
 
 	limits := &EpochLimits{
 		Epoch: epochNum,
 	}
-	{
+	if needFirst {
 		firstBlockSlot, err := h.GetFirstProducedBlock(epochNum)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get first available block for epoch %d: %s", epochNum, err)
@@ -489,7 +530,7 @@ func (h *Helper) GetEpochLimits() (*EpochLimits, error) {
 	}
 
 	nextEpochNum := epochNum + 1
-	{
+	if needLast {
 		nextEpochFirstBlock, err := h.GetFirstProducedBlock(nextEpochNum)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get last available block for epoch %d: %s", epochNum, err)
@@ -513,14 +554,14 @@ func (h *Helper) GetEpochLimits() (*EpochLimits, error) {
 		// the next epoch, whose parent slot then also lands inside the next epoch.
 		// That produces a bogus "last slot" and a confusing mismatch only after the
 		// entire CAR has been checked (~hours). Fail fast with an actionable message.
-		if CalcEpochForSlot(limits.LastBlockSlot) != epochNum {
+		if slottools.CalcEpochForSlot(limits.LastBlockSlot) != epochNum {
 			return nil, fmt.Errorf(
 				"RPC returned inconsistent epoch-boundary data: derived last slot of epoch %d is %d, but that slot is in epoch %d "+
 					"(it is the parent slot of %d, the first block of epoch %d the RPC reported — likely a getBlocks gap on a backfilling node). "+
 					"Retry against a fully-synced RPC, or override with --last-slot/--last-hash",
 				epochNum,
 				limits.LastBlockSlot,
-				CalcEpochForSlot(limits.LastBlockSlot),
+				slottools.CalcEpochForSlot(limits.LastBlockSlot),
 				limits.NextBlockSlot,
 				nextEpochNum,
 			)

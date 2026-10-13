@@ -25,6 +25,7 @@ import (
 	"github.com/rpcpool/poh-check-car/poh"
 	"github.com/rpcpool/yellowstone-faithful/ipld/ipldbindcode"
 	"github.com/rpcpool/yellowstone-faithful/iplddecoders"
+	"github.com/rpcpool/yellowstone-faithful/slottools"
 	concurrently "github.com/tejzpr/ordered-concurrently/v3"
 	"k8s.io/klog"
 )
@@ -40,6 +41,8 @@ func main() {
 		noProgress  bool
 		epochNum    int64
 		rpcEndpoint string
+		network     string
+		agGenesis   OptionalUint64
 		limitFlags  = new(LimitFlags)
 	)
 	flag.StringVar(&carPath, "car", "", "Path to CAR file")
@@ -48,6 +51,8 @@ func main() {
 	flag.BoolVar(&noProgress, "silent", noProgress, "Disable progress bar")
 	flag.Int64Var(&epochNum, "epoch", -1, "Epoch number")
 	flag.StringVar(&rpcEndpoint, "rpc", rpc.MainNetBeta.RPC, "RPC endpoint")
+	flag.StringVar(&network, "network", "", "Cluster the CAR belongs to (mainnet, devnet, testnet); fails if --rpc is another cluster's node, and uses its epoch schedule instead of asking the RPC")
+	flag.Var(&agGenesis, "alpenglow-genesis-slot", "Slot of the Alpenglow genesis block; later slots must follow Alpenglow rules (default: from the genesis certificate marker, if the CAR has one)")
 	limitFlags.AddToFlagSet(flag.CommandLine)
 	flag.Parse()
 
@@ -74,7 +79,18 @@ func main() {
 	}
 	helper := NewHelper(uint64(epochNum), rpc.New(rpcEndpoint))
 
-	limits, err := helper.GetEpochLimits()
+	// Epoch boundaries differ per cluster (testnet had warmup epochs).
+	epochSchedule, err := helper.GetEpochSchedule(network)
+	if err != nil {
+		klog.Exitf("error: failed to get epoch schedule: %s", err)
+	}
+	slottools.SetEpochSchedule(epochSchedule)
+	klog.Infof("Epoch schedule: %s", epochSchedule)
+
+	epochStart, epochEnd := slottools.CalcEpochLimits(uint64(epochNum))
+	customStart := limitFlags.StartSlot.IsSet() && limitFlags.StartSlot.Get() != epochStart
+	customEnd := limitFlags.EndSlot.IsSet() && limitFlags.EndSlot.Get() != epochEnd
+	limits, err := helper.GetEpochLimits(!customStart, !customEnd)
 	if err != nil {
 		klog.Exitf("error: failed to get epoch limits: %s", err)
 	}
@@ -89,7 +105,6 @@ func main() {
 	// spew.Dump(limits)
 	if limits.isCustomRange() {
 		// need to reset the blockhashes
-		epochStart, epochEnd := CalcEpochLimits(uint64(epochNum))
 		if limits.StartSlot.IsSet() && epochStart != limits.StartSlot.Get() {
 			startBlock, err := helper.GetBlock((limits.StartSlot.Get()))
 			if err != nil {
@@ -127,6 +142,7 @@ func main() {
 		noProgress,
 		uint64(epochNum),
 		limits,
+		&blockChecker{genesisSlot: agGenesis},
 	); err != nil {
 		klog.Exitf("error: %s", err)
 	}
@@ -160,7 +176,7 @@ func (j *entryCheckJob) assert() error {
 	}
 	if !bytes.Equal(j.Wanted[:], ha[:]) {
 		return fmt.Errorf(
-			"PoH mismatch for slot %d, entry %d: expected %s, actual %s",
+			"PoH mismatch in the block after slot %d, entry %d: expected %s, actual %s",
 			j.Slot,
 			j.EntryIndex,
 			solana.Hash(j.Wanted),
@@ -186,6 +202,7 @@ func checkCar(
 	noProgress bool,
 	epochNum uint64,
 	limits *EpochLimits,
+	blocks *blockChecker,
 ) error {
 	file, err := os.Open(carPath)
 	if err != nil {
@@ -249,6 +266,12 @@ func checkCar(
 	blockhash := solana.Hash([32]byte{})
 	numCheckedEntries := new(atomic.Uint64)
 	numHashes := new(atomic.Uint64)
+	var (
+		hashesPerTick    uint64 // learned from the first TowerBFT block
+		badTowerBlocks   int
+		firstBadTowerErr error
+	)
+	resultsDone := make(chan struct{})
 	numBlocks := new(atomic.Uint64)
 
 	// initialize a job channel that will be read by many workers:
@@ -289,24 +312,38 @@ func checkCar(
 	statTick := time.Second * 2
 
 	go func() {
+		defer close(resultsDone)
 		currentSlotNumHashesAccumulator := uint64(0)
+		blockEntries := newBlockEntryStats()
 
 		// process the results from the workers:
 		for result := range outputChan {
 			switch resValue := result.Value.(type) {
 			case error:
 				panic(fmt.Errorf("error: %w", resValue))
-			case uint64:
-				if CalcEpochForSlot(resValue) == epochNum {
+			case blockSignal:
+				slot := resValue.Slot
+				if resValue.Alpenglow {
+					if err := blockEntries.checkAlpenglow(slot); err != nil {
+						klog.Exitf("PoH error: %s", err)
+					}
+				} else if err := blockEntries.checkTower(slot, resValue.ParentSlot, &hashesPerTick); err != nil {
+					if badTowerBlocks == 0 {
+						firstBadTowerErr = err
+					}
+					badTowerBlocks++
+				}
+				blockEntries = newBlockEntryStats()
+				if slottools.CalcEpochForSlot(slot) == epochNum {
 					numHashes.Add(currentSlotNumHashesAccumulator)
 				} else {
-					panic(fmt.Sprintf("error: unexpected slot %d from epoch %d", resValue, CalcEpochForSlot(resValue)))
+					panic(fmt.Sprintf("error: unexpected slot %d from epoch %d", slot, slottools.CalcEpochForSlot(slot)))
 				}
 				currentSlotNumHashesAccumulator = 0
 				numBlocks.Add(1)
 				blockhash = solana.Hash(prevBlockHash)
 				percentDone := float64(numBlocks.Load()) / numExpectedTotalBlocks * 100
-				logMsg := fmt.Sprintf("Slot %d (%.2f%%)", resValue, percentDone)
+				logMsg := fmt.Sprintf("Slot %d (%.2f%%)", slot, percentDone)
 				if time.Since(lastSecondTick) > statTick {
 					lastSecondTick = time.Now()
 					thisNumHashes := numHashes.Load()
@@ -334,18 +371,18 @@ func checkCar(
 					if isFirstBlock {
 						isFirstBlock = false
 
-						if err := limits.AssertFirstBlockSlot(resValue); err != nil {
+						if err := limits.AssertFirstBlockSlot(slot); err != nil {
 							klog.Exitf(
 								"PoH error: expected first slot in CAR to be %d, got %d (%s)",
 								limits.FirstBlockSlot,
-								resValue,
+								slot,
 								blockhash,
 							)
 						} else {
 							klog.Infof(
 								"Assertion successful: First block in CAR for epoch %d is %d (blockhash=%s)",
 								epochNum,
-								resValue,
+								slot,
 								blockhash,
 							)
 						}
@@ -355,14 +392,14 @@ func checkCar(
 								limits.FirstBlockhash,
 								limits.FirstBlockSlot,
 								blockhash,
-								resValue,
+								slot,
 							)
 						} else {
 							klog.Infof(
 								"Assertion successful: First blockhash in CAR for epoch %d is %s (block=%d)",
 								epochNum,
 								blockhash,
-								resValue,
+								slot,
 							)
 						}
 					}
@@ -391,6 +428,7 @@ func checkCar(
 
 				entry := resValue.Entry
 				currentSlotNumHashesAccumulator += uint64(entry.NumHashes)
+				blockEntries.add(entry)
 
 				if entry.NumHashes == 0 && len(entry.Transactions) == 0 {
 					klog.Exitf("error: entry has no hashes and no transactions: %s", spew.Sdump(entry))
@@ -431,6 +469,9 @@ func checkCar(
 	entryIndex := -1
 
 	startProcessingElements := !limits.StartSlot.IsSet()
+	// A block's entries and transactions come before its block node, so with a custom
+	// --start hold them until the block node shows whether the block is in range.
+	var pending []func()
 
 	for {
 		if ctx.Err() != nil {
@@ -440,6 +481,9 @@ func checkCar(
 		if errors.Is(err, io.EOF) {
 			fmt.Println("EOF")
 			break
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read CAR node %d: %w", numNodesSeen+1, err)
 		}
 		numNodesSeen++
 
@@ -462,19 +506,18 @@ func checkCar(
 					return fmt.Errorf("failed to decode block: %w", err)
 				}
 				slot := uint64(block.Slot)
-				{
-					if limits.StartSlot.IsSet() {
-						if limits.PreviousBlockSlot == slot {
-							klog.Infof("Starting to process elements at slot %d (after custom start slot %d)", slot, limits.StartSlot.Get())
-							startProcessingElements = true
-							continue
-						}
-						if slot < (limits.StartSlot.Get()) {
-							// skip this block
-							// klog.Infof("Skipping block at slot %d (before custom start slot %d)", slot, limits.StartSlot.Get())
-							continue
-						}
+				if !startProcessingElements {
+					if slot < limits.StartSlot.Get() {
+						pending = nil
+						entryIndex = -1
+						continue
 					}
+					klog.Infof("Starting PoH at slot %d (custom start slot %d)", slot, limits.StartSlot.Get())
+					for _, send := range pending {
+						send()
+					}
+					pending = nil
+					startProcessingElements = true
 				}
 				{
 					if lastBlockNum == -1 {
@@ -493,12 +536,21 @@ func checkCar(
 				if block.Slot < lastBlockNum {
 					return fmt.Errorf("unexpected block number: %d is less than %d", block.Slot, lastBlockNum)
 				}
+				if lastBlockNum != -1 && uint64(block.Meta.Parent_slot) != uint64(lastBlockNum) {
+					return fmt.Errorf("PoH error: slot %d has parent %d, but the previous block in the CAR is %d", block.Slot, block.Meta.Parent_slot, lastBlockNum)
+				}
+				alpenglow, err := blocks.check(block)
+				if err != nil {
+					return fmt.Errorf("PoH error: %w", err)
+				}
 				lastBlockNum = block.Slot
 
 				{
-					workerInputChan <- slotSignal(
-						uint64(lastBlockNum),
-					)
+					workerInputChan <- blockSignal{
+						Slot:       uint64(lastBlockNum),
+						ParentSlot: uint64(block.Meta.Parent_slot),
+						Alpenglow:  alpenglow,
+					}
 					numBlocksWhereCheckedPoH++
 					slot := uint64(lastBlockNum)
 
@@ -519,20 +571,25 @@ func checkCar(
 		}
 
 		if kind == iplddecoders.KindEntry || kind == iplddecoders.KindTransaction {
-			if !startProcessingElements {
-				continue
+			parentSlot, index, element := uint64(lastBlockNum), entryIndex, object
+			send := func() {
+				waitExecuted.Add(1)
+				waitResultsReceived.Add(1)
+				numReceivedParsed.Add(1)
+				workerInputChan <- newParserTask(
+					parentSlot,
+					index,
+					element,
+					func() {
+						waitExecuted.Done()
+					},
+				)
 			}
-			waitExecuted.Add(1)
-			waitResultsReceived.Add(1)
-			numReceivedParsed.Add(1)
-			workerInputChan <- newParserTask(
-				uint64(lastBlockNum),
-				entryIndex,
-				object,
-				func() {
-					waitExecuted.Done()
-				},
-			)
+			if startProcessingElements {
+				send()
+			} else {
+				pending = append(pending, send)
+			}
 		}
 	}
 	{
@@ -543,6 +600,7 @@ func checkCar(
 		klog.Infof("Waiting to receive all results...")
 		close(workerInputChan)
 		waitResultsReceived.Wait()
+		<-resultsDone // the last block's signal comes after its entries
 		klog.Infof("All results received")
 
 		klog.Infof("Waiting for remaining jobs to finish...")
@@ -567,7 +625,7 @@ func checkCar(
 			humanize.Comma(int64(numHashes.Load())),
 		)
 		// if the last slot is for a different epoch, return an error:
-		if CalcEpochForSlot(uint64(lastBlockNum)) != epochNum {
+		if slottools.CalcEpochForSlot(uint64(lastBlockNum)) != epochNum {
 			return fmt.Errorf(
 				"PoH error: last slot %d is not in epoch %d",
 				lastBlockNum,
@@ -608,13 +666,15 @@ func checkCar(
 			}
 		}
 
-		mustNumHashesPerEpoch := uint64(345_600_000_000)
-		if numHashes.Load() != mustNumHashesPerEpoch {
+		if hashesPerTick > 0 {
+			klog.Infof("TowerBFT hashes per tick for epoch %d: %d", epochNum, hashesPerTick)
+		}
+		if badTowerBlocks > 0 {
 			klog.Warningf(
-				"PoH warning: wrong number of hashes for epoch %d: expected %d, got %d",
+				"PoH warning: %d TowerBFT blocks in epoch %d break the tick rules; first: %s",
+				badTowerBlocks,
 				epochNum,
-				mustNumHashesPerEpoch,
-				numHashes.Load(),
+				firstBadTowerErr,
 			)
 		}
 	}
@@ -707,11 +767,9 @@ func readAllSignatures(buf []byte) ([]solana.Signature, error) {
 	return sigs, nil
 }
 
-type slotSignal uint64
-
 // Run implements concurrently.WorkFunction.
-func (s slotSignal) Run(ctx context.Context) interface{} {
-	return uint64(s)
+func (s blockSignal) Run(ctx context.Context) interface{} {
+	return s
 }
 
 type parserTask struct {
@@ -776,17 +834,3 @@ func alignToPageSize(size int) int {
 	mem := uintptr(size + alignment)
 	return int((mem + uintptr(mask)) & ^uintptr(mask))
 }
-
-// CalcEpochForSlot returns the epoch for the given slot.
-func CalcEpochForSlot(slot uint64) uint64 {
-	return slot / EpochLen
-}
-
-// CalcEpochLimits returns the start and stop slots for the given epoch (inclusive).
-func CalcEpochLimits(epoch uint64) (uint64, uint64) {
-	epochStart := epoch * EpochLen
-	epochStop := epochStart + EpochLen - 1
-	return epochStart, epochStop
-}
-
-const EpochLen = 432000
