@@ -9,6 +9,7 @@ require (
 	github.com/gagliardetto/solana-go v1.23.0
 	github.com/ipfs/go-block-format v0.2.0
 	github.com/ipld/go-car v0.6.2
+	github.com/ipld/go-ipld-prime v0.21.0
 	github.com/minio/sha256-simd v1.0.1
 	github.com/rpcpool/yellowstone-faithful v0.7.30-rc.3
 	github.com/tejzpr/ordered-concurrently/v3 v3.0.1
@@ -50,10 +51,9 @@ require (
 	github.com/ipfs/go-metrics-interface v0.0.1 // indirect
 	github.com/ipfs/go-verifcid v0.0.2 // indirect
 	github.com/ipld/go-codec-dagpb v1.6.0 // indirect
-	github.com/ipld/go-ipld-prime v0.21.0 // indirect
 	github.com/jbenet/goprocess v0.1.4 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.18.0 // indirect
+	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/logrusorgru/aurora v2.0.3+incompatible // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
