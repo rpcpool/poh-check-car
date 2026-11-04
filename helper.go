@@ -39,13 +39,33 @@ func (h *Helper) GetBlocks(start, end uint64) (rpc.BlocksResult, error) {
 			h.ctx,
 			start,
 			&end,
-			rpc.CommitmentConfirmed,
+			rpc.CommitmentFinalized,
 		)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return blocks, nil
+}
+
+// getBlocksChunk keeps each getBlocks call well under agave's 500,000-slot range limit.
+const getBlocksChunk = 50_000
+
+// GetBlockList returns the finalized slots that have a block in [start, end].
+func (h *Helper) GetBlockList(start, end uint64) ([]uint64, error) {
+	var out []uint64
+	for lo := start; lo <= end; lo += getBlocksChunk {
+		hi := min(lo+getBlocksChunk-1, end)
+		blocks, err := h.GetBlocks(lo, hi)
+		if err != nil {
+			return nil, fmt.Errorf("getBlocks %d..%d: %w", lo, hi, err)
+		}
+		out = append(out, blocks...)
+		if hi == end {
+			break
+		}
+	}
+	return out, nil
 }
 
 func (h *Helper) GetFirstProducedBlock(epoch uint64) (uint64, error) {
@@ -82,7 +102,7 @@ func (h *Helper) GetBlock(slot uint64) (*rpc.GetBlockResult, error) {
 			slot,
 			&rpc.GetBlockOpts{
 				Encoding:           solana.EncodingBase64,
-				Commitment:         rpc.CommitmentConfirmed,
+				Commitment:         rpc.CommitmentFinalized,
 				TransactionDetails: rpc.TransactionDetailsNone,
 				Rewards:            &FALSE,
 			},

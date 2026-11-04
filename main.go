@@ -43,6 +43,8 @@ func main() {
 		rpcEndpoint string
 		network     string
 		agGenesis   OptionalUint64
+		badTicks    bool
+		skipSlots   bool
 		limitFlags  = new(LimitFlags)
 	)
 	flag.StringVar(&carPath, "car", "", "Path to CAR file")
@@ -53,6 +55,8 @@ func main() {
 	flag.StringVar(&rpcEndpoint, "rpc", rpc.MainNetBeta.RPC, "RPC endpoint")
 	flag.StringVar(&network, "network", "", "Cluster the CAR belongs to (mainnet, devnet, testnet); fails if --rpc is another cluster's node, and uses its epoch schedule instead of asking the RPC")
 	flag.Var(&agGenesis, "alpenglow-genesis-slot", "Slot of the Alpenglow genesis block; later slots must follow Alpenglow rules (default: from the genesis certificate marker, if the CAR has one)")
+	flag.BoolVar(&badTicks, "allow-bad-ticks", false, "Only warn when a TowerBFT block has the wrong tick count or does not end with a tick")
+	flag.BoolVar(&skipSlots, "skip-slot-list", false, "Don't check that the CAR's blocks are exactly the slots the RPC's getBlocks lists")
 	limitFlags.AddToFlagSet(flag.CommandLine)
 	flag.Parse()
 
@@ -130,6 +134,27 @@ func main() {
 
 	limits.PrintAssertions()
 
+	var slots *slotList
+	if skipSlots {
+		klog.Warning("Skipping the slot list check (--skip-slot-list)")
+	} else {
+		from, to := epochStart, epochEnd
+		if limits.StartSlot.IsSet() {
+			from = limits.StartSlot.Get()
+		}
+		if limits.EndSlot.IsSet() {
+			to = limits.EndSlot.Get()
+		}
+		want, err := helper.GetBlockList(from, to)
+		if err != nil {
+			klog.Exitf("error: failed to get the slot list for %d..%d (use --skip-slot-list to skip): %s", from, to, err)
+		}
+		if slots, err = newSlotList(want); err != nil {
+			klog.Exitf("error: %s", err)
+		}
+		fmt.Printf("- Will assert the CAR has exactly the %d blocks the RPC lists in slots %d..%d\n", len(want), from, to)
+	}
+
 	startedAt := time.Now()
 	defer func() {
 		klog.Infof("Took %s", time.Since(startedAt))
@@ -142,7 +167,8 @@ func main() {
 		noProgress,
 		uint64(epochNum),
 		limits,
-		&blockChecker{genesisSlot: agGenesis},
+		&blockChecker{genesisSlot: agGenesis, allowBadTicks: badTicks},
+		slots,
 	); err != nil {
 		klog.Exitf("error: %s", err)
 	}
@@ -203,6 +229,7 @@ func checkCar(
 	epochNum uint64,
 	limits *EpochLimits,
 	blocks *blockChecker,
+	slots *slotList,
 ) error {
 	file, err := os.Open(carPath)
 	if err != nil {
@@ -327,11 +354,17 @@ func checkCar(
 					if err := blockEntries.checkAlpenglow(slot); err != nil {
 						klog.Exitf("PoH error: %s", err)
 					}
-				} else if err := blockEntries.checkTower(slot, resValue.ParentSlot, &hashesPerTick); err != nil {
-					if badTowerBlocks == 0 {
-						firstBadTowerErr = err
+				} else {
+					bad, warn := blockEntries.checkTower(slot, resValue.ParentSlot, &hashesPerTick)
+					if bad != nil && !blocks.allowBadTicks {
+						klog.Exitf("PoH error: %s (use --allow-bad-ticks to only warn)", bad)
 					}
-					badTowerBlocks++
+					if err := errors.Join(bad, warn); err != nil {
+						if badTowerBlocks == 0 {
+							firstBadTowerErr = err
+						}
+						badTowerBlocks++
+					}
 				}
 				blockEntries = newBlockEntryStats()
 				if slottools.CalcEpochForSlot(slot) == epochNum {
@@ -539,6 +572,9 @@ func checkCar(
 				if lastBlockNum != -1 && uint64(block.Meta.Parent_slot) != uint64(lastBlockNum) {
 					return fmt.Errorf("PoH error: slot %d has parent %d, but the previous block in the CAR is %d", block.Slot, block.Meta.Parent_slot, lastBlockNum)
 				}
+				if err := slots.see(slot); err != nil {
+					return fmt.Errorf("slot list error: %w", err)
+				}
 				alpenglow, err := blocks.check(block)
 				if err != nil {
 					return fmt.Errorf("PoH error: %w", err)
@@ -624,6 +660,10 @@ func checkCar(
 			epochNum,
 			humanize.Comma(int64(numHashes.Load())),
 		)
+		if err := slots.finish(); err != nil {
+			return fmt.Errorf("slot list error: %w", err)
+		}
+		klog.Infof("Assertion successful: the CAR's blocks match the RPC's slot list")
 		// if the last slot is for a different epoch, return an error:
 		if slottools.CalcEpochForSlot(uint64(lastBlockNum)) != epochNum {
 			return fmt.Errorf(
