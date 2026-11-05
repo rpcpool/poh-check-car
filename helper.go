@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
@@ -35,8 +36,10 @@ func (h *Helper) WithContext(ctx context.Context) *Helper {
 // GetBlocks(start,end uint64) ([]uint64, error)
 func (h *Helper) GetBlocks(start, end uint64) (rpc.BlocksResult, error) {
 	blocks, err := retryExponentialBackoff(DefaultRetries, func() (rpc.BlocksResult, error) {
+		ctx, cancel := context.WithTimeout(h.ctx, getBlocksTimeout)
+		defer cancel()
 		return h.rpcClient.GetBlocks(
-			h.ctx,
+			ctx,
 			start,
 			&end,
 			rpc.CommitmentFinalized,
@@ -48,8 +51,12 @@ func (h *Helper) GetBlocks(start, end uint64) (rpc.BlocksResult, error) {
 	return blocks, nil
 }
 
-// getBlocksChunk keeps each getBlocks call well under agave's 500,000-slot range limit.
-const getBlocksChunk = 50_000
+// getBlocksChunk keeps each getBlocks call fast: on testnet, a 50,000-slot range of
+// old slots takes over 90s while 10,000 slots take about 1s.
+const getBlocksChunk = 10_000
+
+// getBlocksTimeout bounds one getBlocks attempt so a stalled call is retried.
+const getBlocksTimeout = 60 * time.Second
 
 // GetBlockList returns the finalized slots that have a block in [start, end].
 func (h *Helper) GetBlockList(start, end uint64) ([]uint64, error) {

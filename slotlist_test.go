@@ -70,7 +70,7 @@ func TestGetBlockListChunks(t *testing.T) {
 		ranges = append(ranges, [2]uint64{lo, hi})
 		// One block at the start of each range, plus the last slot.
 		res := []uint64{lo}
-		if hi == 120_000 {
+		if hi == 25_000 {
 			res = append(res, hi)
 		}
 		out, _ := json.Marshal(res)
@@ -78,15 +78,15 @@ func TestGetBlockListChunks(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	got, err := NewHelper(0, rpc.New(srv.URL)).GetBlockList(0, 120_000)
+	got, err := NewHelper(0, rpc.New(srv.URL)).GetBlockList(0, 25_000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantRanges := [][2]uint64{{0, 49_999}, {50_000, 99_999}, {100_000, 120_000}}
+	wantRanges := [][2]uint64{{0, 9_999}, {10_000, 19_999}, {20_000, 25_000}}
 	if !slices.Equal(ranges, wantRanges) {
 		t.Fatalf("ranges = %v, want %v", ranges, wantRanges)
 	}
-	if want := []uint64{0, 50_000, 100_000, 120_000}; !slices.Equal(got, want) {
+	if want := []uint64{0, 10_000, 20_000, 25_000}; !slices.Equal(got, want) {
 		t.Fatalf("slots = %v, want %v", got, want)
 	}
 }
