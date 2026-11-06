@@ -235,14 +235,17 @@ func TestBlockEntryStatsTower(t *testing.T) {
 		slot, parent  uint64
 		entries       []*ipldbindcode.Entry
 		hashesPerTick uint64
-		wantErr       string
+		wantBad       string
+		wantWarn      string
 	}{
 		{name: "valid", slot: 10, parent: 9, entries: towerSlot(64, 100)},
+		{name: "slot 0", slot: 0, parent: 0, entries: towerSlot(64, 100)},
 		{name: "skipped slots", slot: 12, parent: 9, entries: towerSlot(192, 100), hashesPerTick: 100},
-		{name: "too few ticks", slot: 12, parent: 9, entries: towerSlot(64, 100), wantErr: "64 ticks, want 192"},
-		{name: "trailing entry", slot: 10, parent: 9, entries: append(towerSlot(64, 100), entry(1, 1)), wantErr: "does not end with a tick"},
-		{name: "uneven ticks", slot: 10, parent: 9, entries: append(towerSlot(63, 100), entry(5, 0)), wantErr: "different hash counts"},
-		{name: "hashes per tick changed", slot: 10, parent: 9, entries: towerSlot(64, 100), hashesPerTick: 39062, wantErr: "ticks have 100 hashes, earlier blocks had 39062"},
+		{name: "too few ticks", slot: 12, parent: 9, entries: towerSlot(64, 100), wantBad: "64 ticks, want 192"},
+		{name: "stripped Alpenglow block", slot: 10, parent: 9, entries: []*ipldbindcode.Entry{entry(1, 2), entry(1, 0)}, wantBad: "1 ticks, want 64"},
+		{name: "trailing entry", slot: 10, parent: 9, entries: append(towerSlot(64, 100), entry(1, 1)), wantBad: "does not end with a tick"},
+		{name: "uneven ticks", slot: 10, parent: 9, entries: append(towerSlot(63, 100), entry(5, 0)), wantWarn: "different hash counts"},
+		{name: "hashes per tick changed", slot: 10, parent: 9, entries: towerSlot(64, 100), hashesPerTick: 39062, wantWarn: "ticks have 100 hashes, earlier blocks had 39062"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -251,19 +254,25 @@ func TestBlockEntryStatsTower(t *testing.T) {
 				s.add(e)
 			}
 			hpt := tt.hashesPerTick
-			err := s.checkTower(tt.slot, tt.parent, &hpt)
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatal(err)
-				}
-				if hpt != 100 {
-					t.Fatalf("hashes per tick = %d, want 100", hpt)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("got error %v, want %q", err, tt.wantErr)
+			bad, warn := s.checkTower(tt.slot, tt.parent, &hpt)
+			checkErr(t, "bad", bad, tt.wantBad)
+			checkErr(t, "warn", warn, tt.wantWarn)
+			if tt.wantBad == "" && tt.wantWarn == "" && hpt != 100 {
+				t.Fatalf("hashes per tick = %d, want 100", hpt)
 			}
 		})
+	}
+}
+
+func checkErr(t *testing.T, kind string, err error, want string) {
+	t.Helper()
+	if want == "" {
+		if err != nil {
+			t.Fatalf("%s: unexpected error %v", kind, err)
+		}
+		return
+	}
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("%s: got error %v, want %q", kind, err, want)
 	}
 }

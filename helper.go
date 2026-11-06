@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
@@ -35,17 +36,43 @@ func (h *Helper) WithContext(ctx context.Context) *Helper {
 // GetBlocks(start,end uint64) ([]uint64, error)
 func (h *Helper) GetBlocks(start, end uint64) (rpc.BlocksResult, error) {
 	blocks, err := retryExponentialBackoff(DefaultRetries, func() (rpc.BlocksResult, error) {
+		ctx, cancel := context.WithTimeout(h.ctx, getBlocksTimeout)
+		defer cancel()
 		return h.rpcClient.GetBlocks(
-			h.ctx,
+			ctx,
 			start,
 			&end,
-			rpc.CommitmentConfirmed,
+			rpc.CommitmentFinalized,
 		)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return blocks, nil
+}
+
+// getBlocksChunk keeps each getBlocks call fast: on testnet, a 50,000-slot range of
+// old slots takes over 90s while 10,000 slots take about 1s.
+const getBlocksChunk = 10_000
+
+// getBlocksTimeout bounds one getBlocks attempt so a stalled call is retried.
+const getBlocksTimeout = 60 * time.Second
+
+// GetBlockList returns the finalized slots that have a block in [start, end].
+func (h *Helper) GetBlockList(start, end uint64) ([]uint64, error) {
+	var out []uint64
+	for lo := start; lo <= end; lo += getBlocksChunk {
+		hi := min(lo+getBlocksChunk-1, end)
+		blocks, err := h.GetBlocks(lo, hi)
+		if err != nil {
+			return nil, fmt.Errorf("getBlocks %d..%d: %w", lo, hi, err)
+		}
+		out = append(out, blocks...)
+		if hi == end {
+			break
+		}
+	}
+	return out, nil
 }
 
 func (h *Helper) GetFirstProducedBlock(epoch uint64) (uint64, error) {
@@ -82,7 +109,7 @@ func (h *Helper) GetBlock(slot uint64) (*rpc.GetBlockResult, error) {
 			slot,
 			&rpc.GetBlockOpts{
 				Encoding:           solana.EncodingBase64,
-				Commitment:         rpc.CommitmentConfirmed,
+				Commitment:         rpc.CommitmentFinalized,
 				TransactionDetails: rpc.TransactionDetailsNone,
 				Rewards:            &FALSE,
 			},

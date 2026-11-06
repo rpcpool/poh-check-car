@@ -29,6 +29,7 @@ type blockChecker struct {
 	lastTowerSlot  OptionalUint64
 	sawAlpenglow   bool
 	prevBlockID    []byte // nil after a TowerBFT block, which has no block id in the CAR
+	allowBadTicks  bool   // only warn when a TowerBFT block breaks agave's tick count rules
 }
 
 // check validates one block and reports whether it follows Alpenglow rules.
@@ -196,21 +197,27 @@ func (s *blockEntryStats) checkAlpenglow(slot uint64) error {
 	return nil
 }
 
-// checkTower applies agave's TowerBFT tick rules: 64 ticks per slot since the parent,
-// a trailing tick, and the same hash count in every tick. hashesPerTick is learned
-// from the first block, since mainnet raised it from 12,500 by feature activation.
-func (s *blockEntryStats) checkTower(slot, parentSlot uint64, hashesPerTick *uint64) error {
-	switch wantTicks := int((slot - parentSlot) * towerTicksPerSlot); {
-	case s.numTicks != wantTicks:
-		return fmt.Errorf("slot %d: %d ticks, want %d", slot, s.numTicks, wantTicks)
-	case !s.lastIsTick:
-		return fmt.Errorf("slot %d: block does not end with a tick", slot)
+// checkTower applies agave's TowerBFT tick rules. Replay rejects a block without 64 ticks per
+// slot since its parent or with a trailing entry, so those are bad; uneven tick hashes only warn.
+func (s *blockEntryStats) checkTower(slot, parentSlot uint64, hashesPerTick *uint64) (bad, warn error) {
+	gap := slot - parentSlot
+	if slot == parentSlot {
+		gap = 1 // slot 0 is its own parent and holds one slot of ticks
+	}
+	if want := int(gap * towerTicksPerSlot); s.numTicks != want {
+		return fmt.Errorf("slot %d: %d ticks, want %d", slot, s.numTicks, want), nil
+	}
+	if !s.lastIsTick {
+		return fmt.Errorf("slot %d: block does not end with a tick", slot), nil
+	}
+	// hashesPerTick comes from the first block: mainnet raised it from 12,500 by feature activation.
+	switch {
 	case s.unevenTicks:
-		return fmt.Errorf("slot %d: ticks have different hash counts", slot)
+		return nil, fmt.Errorf("slot %d: ticks have different hash counts", slot)
 	case *hashesPerTick == 0:
 		*hashesPerTick = s.firstTickHashes
 	case s.firstTickHashes != *hashesPerTick:
-		return fmt.Errorf("slot %d: ticks have %d hashes, earlier blocks had %d", slot, s.firstTickHashes, *hashesPerTick)
+		return nil, fmt.Errorf("slot %d: ticks have %d hashes, earlier blocks had %d", slot, s.firstTickHashes, *hashesPerTick)
 	}
-	return nil
+	return nil, nil
 }
