@@ -1,6 +1,6 @@
 module github.com/rpcpool/poh-check-car
 
-go 1.24.4
+go 1.26.0
 
 require (
 	github.com/davecgh/go-spew v1.1.1
@@ -9,6 +9,7 @@ require (
 	github.com/gagliardetto/solana-go v1.23.0
 	github.com/ipfs/go-block-format v0.2.0
 	github.com/ipld/go-car v0.6.2
+	github.com/ipld/go-ipld-prime v0.21.0
 	github.com/minio/sha256-simd v1.0.1
 	github.com/rpcpool/yellowstone-faithful v0.7.30-rc.3
 	github.com/tejzpr/ordered-concurrently/v3 v3.0.1
@@ -26,7 +27,7 @@ require (
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.8.0 // indirect
 	github.com/gagliardetto/treeout v0.1.4 // indirect
-	github.com/go-logr/logr v1.4.3 // indirect
+	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
@@ -50,7 +51,6 @@ require (
 	github.com/ipfs/go-metrics-interface v0.0.1 // indirect
 	github.com/ipfs/go-verifcid v0.0.2 // indirect
 	github.com/ipld/go-codec-dagpb v1.6.0 // indirect
-	github.com/ipld/go-ipld-prime v0.21.0 // indirect
 	github.com/jbenet/goprocess v0.1.4 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
@@ -82,9 +82,10 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel v1.39.0 // indirect
-	go.opentelemetry.io/otel/metric v1.39.0 // indirect
-	go.opentelemetry.io/otel/trace v1.39.0 // indirect
+	go.opentelemetry.io/otel v1.47.0 // indirect
+	go.opentelemetry.io/otel/log v1.47.0 // indirect
+	go.opentelemetry.io/otel/metric v1.47.0 // indirect
+	go.opentelemetry.io/otel/trace v1.47.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/ratelimit v0.3.1 // indirect
